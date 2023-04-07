@@ -5,8 +5,8 @@ from tqdm import tqdm
 
 #################################################################
 # Hyperparameters and general initialization
-cache_images = True #load image cache if available, make image cache when needed
-cache_text = True#same but for text
+cache_images = False #load image cache if available, make image cache when needed
+cache_text = False#same but for text
 vis_boxes = True #show image with detected bounding boxes
 vis_details = True #show details for each bounding box
 headless = False
@@ -146,7 +146,8 @@ for img_name in tqdm(img_names):
 		plt.imshow(image_with_detections)
 		plt.axis('off')
 		plt.title('Detected objects and RPN scores')
-		plt.show()
+		#plt.show()
+		plt.savefig(f"plots/{img_name}_plot.png")
 
 
 	#################################################################
@@ -238,7 +239,8 @@ for img_name in tqdm(img_names):
 			axs[3].set_yticks(range(len(category_names)))
 			axs[3].set_yticklabels(category_names, fontdict={
 			    'fontsize': fontsize})
-			plt.show()
+			#plt.show()
+			plt.savefig(f"plots/{img_name}_{anno_idx}.png")
 		cnt += 1
 		# fig.tight_layout()
 
