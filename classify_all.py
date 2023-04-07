@@ -244,7 +244,7 @@ for img_name in tqdm(img_names):
 		cnt += 1
 		# fig.tight_layout()
 
-
+	# test
 	print('Detection counts:', cnt)
 	#plt.show()
 if cache_images and not cache_img_exists:
