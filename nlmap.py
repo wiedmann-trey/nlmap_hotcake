@@ -40,6 +40,18 @@ from bosdyn.client.manipulation_api_client import ManipulationApiClient
 
 from spot_utils.move_spot_to import move_to
 
+import tensorflow.compat.v1 as tf
+from vild.vild_utils import build_text_embedding
+
+torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = True
+
+from sklearn.cluster import DBSCAN
+import copy
+
+import random
+
+import xml.etree.ElementTree as ET
+
 class NLMap():
 	def __init__(self,config_path="./configs/example.ini"):
 		###########################################################################################################
@@ -88,10 +100,11 @@ class NLMap():
 			os.mkdir(self.figs_dir_path)
 
 		### Load pose data
-		if self.config["pose"].getboolean("use_pose"):
+		## this sets up the directory variables with the pose information
+		if self.config["pose"].getboolean("use_pose"): ##### TODO read from .xml
 			pose_path = f"{self.data_dir_path}/{self.config['file_names']['pose']}"
 			try:
-				self.pose_dir = pickle.load(open(pose_path,"rb"))
+				self.pose_dir = pickle.load(open(pose_path,"rb")) 
 			except:
 				raise Exception(f"use_pose is true but no pose data found at {pose_path}")
 
@@ -115,22 +128,8 @@ class NLMap():
 		self.cache_path = f"{self.config['paths']['cache_dir']}/{self.config['dir_names']['data']}"
 	
 		### Compute text embeddings with CLIP 
-		self.cache_text_exists = os.path.isfile(f"{self.cache_path}_text")
-
-		#if text cache should be used and it exists, load it
-		if self.config["cache"].getboolean("text") and self.cache_text_exists:
-			self.text_features = pickle.load(open(f"{self.cache_path}_text","rb"))
-		else: #build new text embeddings
-			from vild.vild_utils import build_text_embedding
-
-			#load CLIP model
-			self.clip_model, self.clip_preprocess = clip.load(self.config["clip"]["model"])
-
-			self.text_features = build_text_embedding(self.categories,self.clip_model,self.clip_preprocess,prompt_engineering=self.config["text"].getboolean("prompt_engineering"))
-
-			if self.config["cache"].getboolean("text"): #save the text cache
-				pickle.dump(self.text_features,open(f"{self.cache_path}_text","wb"))
-
+		self.compute_text_embeddings()
+		
 		### Image initialization
 		self.image_names = os.listdir(self.data_dir_path)
 		self.image_names = [image_name for image_name in self.image_names if "color" in image_name]
@@ -141,32 +140,40 @@ class NLMap():
 		### Load cached image embeddings if they exist and are to be used, or make them otherwise
 		self.cache_image_exists = os.path.isfile(f"{self.config['paths']['cache_dir']}/{self.config['dir_names']['data']}_images_vild")
 
+		## huda TODO populate the ground truth dictionary (class variable)
+
 		if self.config["cache"].getboolean("images") and self.cache_image_exists: #if image cache should be used and it exists, load it in
 			self.image2vectorvild_dir = pickle.load(open(f"{self.cache_path}_images_vild","rb"))
 			self.image2vectorclip_dir = pickle.load(open(f"{self.cache_path}_images_clip","rb"))
 
-			self.topk_vild_dir= pickle.load(open(f"{self.cache_path}_topk_vild","rb"))
-			self.topk_clip_dir = pickle.load(open(f"{self.cache_path}_topk_clip","rb"))
+			if not self.config["our_method"].getboolean("use_our_method"):
+				self.topk_vild_dir= pickle.load(open(f"{self.cache_path}_topk_vild","rb"))
+				self.topk_clip_dir = pickle.load(open(f"{self.cache_path}_topk_clip","rb"))
 		else: #make image embeddings (either because you're not using cache, or because you don't have cache)
 			self.priority_queue_clip_dir = defaultdict(PriorityQueue) #keys will be category names. The priority will be negative score (since lowest gets dequeue) and items be image, anno_idx, and crop
 			self.priority_queue_vild_dir = defaultdict(PriorityQueue) #keys will be category names. The priority will be negative score (since lowest gets dequeue) and items be image, anno_idx, and crop
 
 			# Load ViLD model
-			import tensorflow.compat.v1 as tf
 			from vild.vild_utils import extract_roi_vild, paste_instance_masks
 
 			self.session = tf.Session(graph=tf.Graph())
 			_ = tf.saved_model.loader.load(self.session, ['serve'], self.config["paths"]["vild_dir"])
 
-			#load CLIP model
-			self.clip_model, self.clip_preprocess = clip.load(self.config["clip"]["model"])
+			## load CLIP model
+			if self.config["our_method"].getboolean("use_clip"):
+				self.clip_model, self.clip_preprocess = clip.load(self.config["clip"]["model"])
 
 			params = self.config["vild"].getint("max_boxes_to_draw"),  self.config["vild"].getfloat("nms_threshold"),  self.config["vild"].getfloat("min_rpn_score_thresh"),  self.config["vild"].getfloat("min_box_area")
 
 			print("Computing image embeddings")
 			self.image2vectorvild_dir = {}
 			self.image2vectorclip_dir = {}
+			embedding_points = []
+			count = 0 
 			for image_name in tqdm(self.image_names):
+				count+=1
+				torch.cuda.empty_cache()
+				print(image_name)
 				image_path = f"{self.data_dir_path}/{image_name}"
 
 				image,image_height,image_width,valid_indices,detection_roi_scores,detection_boxes,detection_masks,detection_visual_feat,rescaled_detection_boxes  = extract_roi_vild(image_path,self.session,params)
@@ -175,15 +182,22 @@ class NLMap():
 				### We only compute CLIP embeddings for vild crops that have highest score
 				### Compute detection scores, and rank results
 
-				raw_scores = detection_visual_feat.dot(self.text_features.T)
-
-				if self.config["vild"].getboolean("use_softmax"):
-					scores_all = softmax(temperature * raw_scores, axis=-1)
+				## if our method is on, then just use all the indicies in scores_all without ranking them
+				
+				if self.config["our_method"].getboolean("use_our_method"):
+					indices = list(range(self.config["vild"].getint("max_boxes_to_draw")))
 				else:
-					scores_all = raw_scores
+					raw_scores = detection_visual_feat.dot(self.text_features.T)
+					
 
-				indices = np.argsort(-np.max(scores_all, axis=1))  # Results are ranked by scores
+					if self.config["vild"].getboolean("use_softmax"):
+						scores_all = softmax(temperature * raw_scores, axis=-1)
+					else:
+						scores_all = raw_scores
 
+					indices = np.argsort(-np.max(scores_all, axis=1))  # Results are ranked by scores
+
+				## saving whole image visualizations with bounding boxes
 				ymin, xmin, ymax, xmax = np.split(rescaled_detection_boxes, 4, axis=-1)
 				processed_boxes = np.concatenate([xmin, ymin, xmax - xmin, ymax - ymin], axis=-1)
 				segmentations = paste_instance_masks(detection_masks, processed_boxes, image_height, image_width)
@@ -198,17 +212,17 @@ class NLMap():
 
 					else:
 						image_with_detections = visualize_boxes_and_labels_on_image_array(
-						    np.array(image),
-						    rescaled_detection_boxes[indices],
-						    valid_indices[:self.config["vild"].getint("max_boxes_to_draw")][indices],
-						    detection_roi_scores[indices],    
-						    self.category_indices,
-						    instance_masks=segmentations[indices],
-						    use_normalized_coordinates=False,
-						    max_boxes_to_draw=self.config["vild"].getint("max_boxes_to_draw"),
-						    min_score_thresh=self.config["vild"].getfloat("min_rpn_score_thresh"),
-						    skip_scores=False,
-						    skip_labels=True)
+							np.array(image),
+							rescaled_detection_boxes[indices],
+							valid_indices[:self.config["vild"].getint("max_boxes_to_draw")][indices],
+							detection_roi_scores[indices],
+							self.category_indices,
+							instance_masks=segmentations[indices],
+							use_normalized_coordinates=False,
+							max_boxes_to_draw=self.config["vild"].getint("max_boxes_to_draw"),
+							min_score_thresh=self.config["vild"].getfloat("min_rpn_score_thresh"),
+							skip_scores=False,
+							skip_labels=True)
 
 
 					plt.figure(figsize=overall_fig_size)
@@ -220,114 +234,79 @@ class NLMap():
 					if self.config["viz"].getboolean("boxes"):
 						plt.show()
 					plt.close()
-
+				else:
+					if len(indices) == 0:
+						print(f'ViLD does not detect anything belong to the given category for {image_name}')					
+					
 				raw_image = np.array(image)
 				n_boxes = rescaled_detection_boxes.shape[0]
 
 				### image2vectorclip_dir[image_name] is a directory with annotations (crops) as keys
 				self.image2vectorclip_dir[image_name] = {}
 
-				### Go through the top crops
+				### Go through the top crops (baseline) or all crops (our_method)
 				for anno_idx in indices[0:int(n_boxes)]:
+					# continue
 					rpn_score = detection_roi_scores[anno_idx]
 					bbox = rescaled_detection_boxes[anno_idx]
-					scores = scores_all[anno_idx]
+					if not self.config["our_method"].getboolean("use_our_method"):
+						scores = scores_all[anno_idx]
 
 					y1, x1, y2, x2 = int(np.floor(bbox[0])), int(np.floor(bbox[1])), int(np.ceil(bbox[2])), int(np.ceil(bbox[3]))
 					crop = np.copy(raw_image[y1:y2, x1:x2, :])
 
 					### Add crop to priority queue for ranking scores for VILD
-					for idx, category_name in enumerate(self.category_names):
-						new_item = (-scores[idx], (image_name,anno_idx,crop,ymin[anno_idx],xmin[anno_idx],ymax[anno_idx],xmax[anno_idx]))
-						#print(category_name, image_name, anno_idx)
-						if new_item in self.priority_queue_vild_dir[category_name].queue:
-							raise Exception(f"{image_name} {anno_idx} already in queue for {category_name}")
-						self.priority_queue_vild_dir[category_name].put(new_item) #TODO: make this an object to more interpretable
-
+						
 					### Run CLIP vision model on crop
 					crop_pil = Image.fromarray(crop)
 
 					#if (use cache and cache does not exist) or (cache image does not exist), process the data
 					if ((self.config["cache"].getboolean("images") and not self.cache_image_exists) or (not self.cache_image_exists)):
-						crop_fname = f"{self.cache_path}_{self.config['dir_names']['data']}_crop.jpeg"
+						crop_fname = f"{self.cache_path}_{self.config['dir_names']['data']}_{image_name}_crop_{anno_idx}.jpeg"
 						crop_pil.save(crop_fname)
 						crop_back = Image.open(crop_fname)
-						crop_processed = self.clip_preprocess(crop_back).unsqueeze(0).to(device)
-						clip_image_features = self.clip_model.encode_image(crop_processed)
+						if self.config["our_method"].getboolean("use_clip"):
+							crop_processed = self.clip_preprocess(crop_back).unsqueeze(0).to(device)
+							clip_image_features = self.clip_model.encode_image(crop_processed)
 
-						self.image2vectorclip_dir[image_name][anno_idx] = clip_image_features
+							self.image2vectorclip_dir[image_name][anno_idx] = clip_image_features
 
-					clip_image_features = self.image2vectorclip_dir[image_name][anno_idx]
+					if self.config["our_method"].getboolean("use_clip"):
+						clip_image_features = self.image2vectorclip_dir[image_name][anno_idx]
 
-					#Normalize clip_image_features before taking dot product with normalized text features
-					clip_image_features = clip_image_features / clip_image_features.norm(dim=1, keepdim=True)
-					clip_image_features = clip_image_features.cpu().detach().numpy()
-					clip_scores = clip_image_features.dot(self.text_features.T)
+						#Normalize clip_image_features before taking dot product with normalized text features
+						clip_image_features = clip_image_features / clip_image_features.norm(dim=1, keepdim=True)
+						clip_image_features = clip_image_features.cpu().detach().numpy()
+					if not self.config["our_method"].getboolean("use_our_method"):	
+						if self.config["our_method"].getboolean("use_clip"):
+							clip_scores = clip_image_features.dot(self.text_features.T)
+							### Add crop to priority queue for ranking scores for CLIP
+						for idx, category_name in enumerate(self.category_names):
+							if self.config["our_method"].getboolean("use_clip"):
+								
+								self.priority_queue_clip_dir[category_name].put((-clip_scores[0][idx], (image_name,anno_idx,crop,ymin[anno_idx],xmin[anno_idx],ymax[anno_idx],xmax[anno_idx]))) #TODO: make this an object to more interpretable
+						
+							new_item = (-scores[idx], (image_name,anno_idx,crop,ymin[anno_idx],xmin[anno_idx],ymax[anno_idx],xmax[anno_idx]))
+							if new_item in self.priority_queue_vild_dir[category_name].queue:
+								raise Exception(f"{image_name} {anno_idx} already in queue for {category_name}")
+							self.priority_queue_vild_dir[category_name].put(new_item) #TODO: make this an object to more interpretable
 
-					### Add crop to priority queue for ranking scores for CLIP
-					for idx, category_name in enumerate(self.category_names):
-						self.priority_queue_clip_dir[category_name].put((-clip_scores[0][idx], (image_name,anno_idx,crop,ymin[anno_idx],xmin[anno_idx],ymax[anno_idx],xmax[anno_idx]))) #TODO: make this an object to more interpretable
-
+						self.save_anno_boxes(image_name,anno_idx, scores, raw_image, segmentations, rpn_score, crop, x1,x2,y1,y2)
+					
+					# 	# TODO 3d_position does not get initialized if there are no ground truths associated with that image.
+					_3d_poisiton = self.extract_3d_position(image_name, x1,x2,y1,y2)
+					embedding = np.append(detection_visual_feat[anno_idx],_3d_poisiton)
+					embedding = np.append(embedding,[y1, x1, y2, x2 ])
+					embedding_points.append(embedding)
 					# TODO: fig_size_w and h are a little hardcoded, make more general?
-					fig_size_w = 35
-					fig_size_h = min(max(5, int(len(self.category_names) / 2.5) ), 10)
-
-					if self.config["viz"].getboolean("boxes") or self.config["viz"].getboolean("save_anno_boxes"):
-						img_w_mask = plot_mask(self.config["viz"]["mask_color"], self.config["viz"].getfloat("alpha"), raw_image, segmentations[anno_idx])
-						crop_w_mask = img_w_mask[y1:y2, x1:x2, :]
-
-						fig, axs = plt.subplots(1, 4, figsize=(fig_size_w, fig_size_h), gridspec_kw={'width_ratios': [3, 1, 1, 2]}, constrained_layout=True)
-
-						# Draw bounding box.
-						rect = patches.Rectangle((x1, y1), x2-x1, y2-y1, linewidth=self.config["viz"].getfloat("line_thickness"), edgecolor='r', facecolor='none')
-						axs[0].add_patch(rect)
-
-						axs[0].set_xticks([])
-						axs[0].set_yticks([])
-						axs[0].set_title(f'bbox: {y1, x1, y2, x2} area: {(y2 - y1) * (x2 - x1)} rpn score: {rpn_score:.4f}')
-
-						axs[0].imshow(raw_image)
-
-						# Draw image in a cropped region.
-						axs[1].set_xticks([])
-						axs[1].set_yticks([])
-
-						axs[1].set_title(f'predicted: {self.category_names[np.argmax(scores)]}')
-
-						axs[1].imshow(crop)
-
-						# Draw segmentation inside a cropped region.
-						axs[2].set_xticks([])
-						axs[2].set_yticks([])
-						axs[2].set_title('mask')
-
-						axs[2].imshow(crop_w_mask)
-
-						# Draw category scores.
-						fontsize = max(min(fig_size_h / float(len(self.category_names)) * 45, 20), 8)
-						for cat_idx in range(len(self.category_names)):
-						  axs[3].barh(cat_idx, scores[cat_idx], 
-						              color='orange' if scores[cat_idx] == max(scores) else 'blue')
-						axs[3].invert_yaxis()
-						axs[3].set_axisbelow(True)
-						axs[3].set_xlim(0, 1)
-						plt.xlabel("confidence score")
-						axs[3].set_yticks(range(len(self.category_names)))
-						axs[3].set_yticklabels(self.category_names, fontdict={
-						    'fontsize': fontsize})
-
-						if self.config["viz"].getboolean("save_anno_boxes"):
-							plt.savefig(f"{self.figs_dir_path}/{image_name}_anno_{anno_idx}.jpg", bbox_inches='tight')
-						if self.config["viz"].getboolean("boxes"):
-							plt.show()
-						plt.close()
-
-
+					
+				
 			if self.config["cache"].getboolean("images"):
 				pickle.dump(self.image2vectorvild_dir,open(f"{self.cache_path}_images_vild","wb"))
 				pickle.dump(self.image2vectorclip_dir,open(f"{self.cache_path}_images_clip","wb"))
 
-				### For priority queue, just get the top k results since PriorityQueue is not picklable
+			### For priority queue, just get the top k results since PriorityQueue is not picklable
+			if not self.config["our_method"].getboolean("use_our_method"):					
 				self.topk_vild_dir = {}
 				self.topk_clip_dir = {}
 				for category_name in self.category_names:
@@ -344,9 +323,95 @@ class NLMap():
 					self.topk_clip_dir[category_name] = topk_clip_list
 
 
+				if self.config["cache"].getboolean("images"):
+					pickle.dump(self.topk_vild_dir,open(f"{self.cache_path}_topk_vild","wb"))
+					pickle.dump(self.topk_clip_dir,open(f"{self.cache_path}_topk_clip","wb"))
 
-				pickle.dump(self.topk_vild_dir,open(f"{self.cache_path}_topk_vild","wb"))
-				pickle.dump(self.topk_clip_dir,open(f"{self.cache_path}_topk_clip","wb"))
+		if self.config["cache"].getboolean("images"):
+			pickle.dump(embedding_points,open(f"{self.cache_path}_clustering_points","wb"))
+
+		print("clustering starts")
+		embedding_points =  np.asarray(embedding_points)
+		clustering = DBSCAN(eps=0.01, min_samples=3)
+		y_pred = clustering.fit_predict(embedding_points)
+		plt.figure(figsize=(10,6))
+		plt.scatter(embedding_points[:,0], embedding_points[:,1],c=y_pred, cmap='Paired')
+		plt.title("Clusters determined by DBSCAN")
+		plt.savefig(f"{self.figs_dir_path}/clustering.jpg", bbox_inches='tight')
+
+		print("done with storing cache of embedding is done")	
+
+	def compute_text_embeddings(self):
+		self.cache_text_exists = os.path.isfile(f"{self.cache_path}_text")
+
+		#if text cache should be used and it exists, load it
+		if self.config["cache"].getboolean("text") and self.cache_text_exists:
+			self.text_features = pickle.load(open(f"{self.cache_path}_text","rb"))
+		else: #build new text embeddings
+
+			#load CLIP model
+			self.clip_model, self.clip_preprocess = clip.load(self.config["clip"]["model"])
+
+			self.text_features = build_text_embedding(self.categories,self.clip_model,self.clip_preprocess,prompt_engineering=self.config["text"].getboolean("prompt_engineering"))
+
+			if self.config["cache"].getboolean("text"): #save the text cache
+				pickle.dump(self.text_features,open(f"{self.cache_path}_text","wb"))
+
+	def save_anno_boxes(self,image_name, anno_idx, scores, raw_image, segmentations, rpn_score, crop, x1,x2,y1,y2):
+		fig_size_w = 35
+		fig_size_h = min(max(5, int(len(self.category_names) / 2.5) ), 10)
+
+		if self.config["viz"].getboolean("boxes") or self.config["viz"].getboolean("save_anno_boxes"):
+			img_w_mask = plot_mask(self.config["viz"]["mask_color"], self.config["viz"].getfloat("alpha"), raw_image, segmentations[anno_idx])
+			crop_w_mask = img_w_mask[y1:y2, x1:x2, :]
+
+			fig, axs = plt.subplots(1, 4, figsize=(fig_size_w, fig_size_h), gridspec_kw={'width_ratios': [3, 1, 1, 2]}, constrained_layout=True)
+
+			# Draw bounding box.
+			rect = patches.Rectangle((x1, y1), x2-x1, y2-y1, linewidth=self.config["viz"].getfloat("line_thickness"), edgecolor='r', facecolor='none')
+			axs[0].add_patch(rect)
+
+			axs[0].set_xticks([])
+			axs[0].set_yticks([])
+			axs[0].set_title(f'bbox: {y1, x1, y2, x2} area: {(y2 - y1) * (x2 - x1)} rpn score: {rpn_score:.4f}')
+
+			axs[0].imshow(raw_image)
+
+			# Draw image in a cropped region.
+			axs[1].set_xticks([])
+			axs[1].set_yticks([])
+
+			axs[1].set_title(f'predicted: {self.category_names[np.argmax(scores)]}')
+
+			axs[1].imshow(crop)
+
+			# Draw segmentation inside a cropped region.
+			axs[2].set_xticks([])
+			axs[2].set_yticks([])
+			axs[2].set_title('mask')
+
+			axs[2].imshow(crop_w_mask)
+
+			# Draw category scores.
+			fontsize = max(min(fig_size_h / float(len(self.category_names)) * 45, 20), 8)
+			for cat_idx in range(len(self.category_names)):
+				axs[3].barh(cat_idx, scores[cat_idx], 
+							color='orange' if scores[cat_idx] == max(scores) else 'blue')
+			axs[3].invert_yaxis()
+			axs[3].set_axisbelow(True)
+			axs[3].set_xlim(0, 1)
+			plt.xlabel("confidence score")
+			axs[3].set_yticks(range(len(self.category_names)))
+			axs[3].set_yticklabels(self.category_names, fontdict={
+				'fontsize': fontsize})
+
+			if self.config["viz"].getboolean("save_anno_boxes"):
+				plt.savefig(f"{self.figs_dir_path}/{image_name}_anno_{anno_idx}.jpg", bbox_inches='tight')
+			if self.config["viz"].getboolean("boxes"):
+				plt.show()
+			plt.close()
+
+
 
 	def viz_pointcloud(self):
 		o3d.visualization.draw_geometries([self.pcd])
@@ -371,13 +436,14 @@ class NLMap():
 
 					axs[1, k].set_title(f"CLIP score {top_k_item_clip[0]*-1:.3f}")
 					axs[1, k].imshow(top_k_item_clip[1][2])
-
+				
 				#### Point cloud stuff
 				#### Just show CLIP for now!
-				file_num = int(top_k_item_clip[1][0].split("_")[1].split(".")[0])
-				depth_img = pickle.load(open(f"{self.data_dir_path}/depth_{str(file_num)}","rb"))
+				file_num = int(top_k_item_clip[1][0].split("_")[1].split(".")[0])  ########## TODO this is the pose calculation
+				depth_img = pickle.load(open(f"{self.data_dir_path}/depth_{str(file_num)}","rb")) ## TODO: change this for the new dataset
 				rotation_matrix = self.pose_dir[file_num]['rotation_matrix']
-				position = self.pose_dir[file_num]['position']
+				position = self.pose_dir[file_num]['position'] ############# TODO read from xml
+				## have if else for the code below. add a config variable
 
 				ymin, xmin, ymax, xmax = top_k_item_clip[1][3:]
 
@@ -410,6 +476,26 @@ class NLMap():
 			if viz_pointcloud:
 				o3d.visualization.draw_geometries([self.pcd]+top_axes)
 
+	def extract_3d_position(self, filename, xmin,xmax,ymin,ymax):
+		#### Point cloud stuff
+		#### Just show CLIP for now!
+		file_num = int(filename.split("_")[1].split(".")[0])  ########## TODO this is the pose calculation
+		depth_img = pickle.load(open(f"{self.data_dir_path}/depth_{str(file_num)}","rb")) ## TODO: change this for the new dataset
+		rotation_matrix = self.pose_dir[file_num]['rotation_matrix']
+		position = self.pose_dir[file_num]['position'] ############# TODO read from xml
+		## have if else for the code below. add a config variable
+		# ymin, xmin, ymax, xmax = top_k_item_clip[1][3:]
+
+		center_y = int((ymin + ymax)/2.0)
+		center_x = int((xmin + xmax)/2.0)
+
+		transformed_point,bad_point = pixel_to_vision_frame(center_y,center_x,depth_img,rotation_matrix,position)
+		side_pointx,_ = pixel_to_vision_frame_depth_provided(center_y,xmax,depth_img[center_y,center_x],rotation_matrix,position)
+		side_pointy,_ = pixel_to_vision_frame_depth_provided(ymax,center_x,depth_img[center_y,center_x],rotation_matrix,position)
+
+		#TODO: what should bb_size be for z? Right now, just making it same as x. Also needs to be axis aligned
+		return transformed_point
+
 	def go_to_and_pick_top_k(self, category_name):
 		assert self.config["robot"].getboolean("use_robot")
 		with bosdyn.client.lease.LeaseKeepAlive(self.lease_client, must_acquire=True, return_at_exit=True):
@@ -424,7 +510,7 @@ class NLMap():
 				depth_img = pickle.load(open(f"{self.data_dir_path}/depth_{str(file_num)}","rb"))
 				rotation_matrix = self.pose_dir[file_num]['rotation_matrix']
 				position = self.pose_dir[file_num]['position']
-
+				## TODO wrap this in an if statement with the 2 extract pose helpers? 
 				ymin, xmin, ymax, xmax = top_k_item_clip[1][3:]
 
 				center_y = int((ymin + ymax)/2.0)
@@ -496,5 +582,5 @@ if __name__ == "__main__":
 
 	### Example things to do 
 	#nlmap.viz_pointcloud()
-	#nlmap.viz_top_k(viz_2d=True,viz_pointcloud=False)
-	nlmap.go_to_and_pick_top_k("Cup")
+	# nlmap.viz_top_k(viz_2d=False,viz_pointcloud=False)
+	# nlmap.go_to_and_pick_top_k("Cup")
