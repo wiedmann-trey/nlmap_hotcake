@@ -10,10 +10,12 @@ cache_text = False#same but for text
 vis_boxes = True #show image with detected bounding boxes
 vis_details = True #show details for each bounding box
 headless = False
-img_dir_root_path = "./data/"
-img_dir_name = "spot-depth-color-pose-data3"
+img_dir_root_path = "/home/ifrah/longterm_semantic_map/strands.pdc.kth.se/public/strands.pdc.kth.se/public/"
+# "./data/"
+img_dir_name = "flat_KTH_labelled_moving_objects"
 img_dir_path = img_dir_root_path + img_dir_name
-cache_path = "./cache/"
+cache_path = "/home/ifrah/longterm_semantic_map/strands.pdc.kth.se/public/strands.pdc.kth.se/cache"
+# "./cache/"
 saved_model_dir = "./vild/image_path_v2"
 
 overall_fig_size = (18, 24)
@@ -27,7 +29,7 @@ params = max_boxes_to_draw, nms_threshold, min_rpn_score_thresh, min_box_area
 
 use_softmax = False
 
-mask_color =   'red'
+mask_color = 'red'
 alpha = 0.5
 fig_size_w = 35
 line_thickness = 2
@@ -46,9 +48,10 @@ category_name_string = ';'.join(['flipflop', 'street sign', 'bracelet',
 '''
 #category_name_string = "Table; Chair; Sofa; Lamp; Rug; Television; Fireplace; Pillow; Blanket; Clock; Picture frame; Vase; Lampshade; Candlestick; Books; Magazines; DVD player; CD player; Record player; Video game console; Board game; Card game; Chess set; Backgammon set; Carpet; Drapes; Blinds; Shelving unit; Side table; Coffee table; Footstool; Armchair; Bean bag; Desk; Office chair; Computer; Printer; Scanner; Fax machine; Telephone; Cell phone; Lamp; Lamp; Rug; Trash can; Wastebasket; Vacuum cleaner; Broom; Dustpan; Mop; Bucket; Dust cloth; Cleaning supplies; Iron; Ironing board; Hair dryer; Curling iron; Toilet brush; Towels; Soap; Shampoo; Toothbrush; Toothpaste; Razor; Shaving cream; Deodorant; Hairbrush; Hair ties; Makeup; Nail polish; Perfume; Cologne; Laundry basket; Clothes hanger; Closet; Dresser; Bed; Mattress; Pillows; Sheets; Blanket; Comforter; Quilt; Bedspread; Nightstand; Alarm clock; Lamp; Lamp; Rug"
 #category_name_string = "Table; Chair"
-category_name_string = "Chair; Books; Television" 
+#category_name_string = "Chair; Books; Television" 
+category_name_string = '''chair6, chair1, water_boiler, backpack1, pillow, trash_bin, backpack3, chair2, hanger_jacket, backpack2'''
 
-category_names = [x.strip() for x in category_name_string.split(';')]
+category_names = [x.strip() for x in category_name_string.split(',')]
 #category_names = ['background'] + category_names
 categories = [{'name': item, 'id': idx+1,} for idx, item in enumerate(category_names)]
 category_indices = {cat['id']: cat for cat in categories}
@@ -56,23 +59,25 @@ category_indices = {cat['id']: cat for cat in categories}
 fig_size_h = min(max(5, int(len(category_names) / 2.5) ), 10)
 
 #################################################################
+# load model for clip image embeddings on crops
+device = "cuda" if torch.cuda.is_available() else "cpu"
+print(f"Models: {clip.available_models()}")
+model, preprocess = clip.load("ViT-B/32", device=device)
+
+#################################################################
 # Compute text embeddings with CLIP
 cache_text_exists = os.path.isfile(cache_path+img_dir_name+"_text")
 if cache_text and cache_text_exists:
 		text_features = pickle.load(open(cache_path+img_dir_name+"_text","rb"))
 else:
-		text_features = build_text_embedding(categories)
+		text_features = build_text_embedding(categories, model, preprocess)
 		pickle.dump(text_features,open(cache_path+img_dir_name+"_text","wb"))
 
-#################################################################
-# load model for clip image embeddings on crops
-device = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"Models: {clip.available_models()}")
-model, preprocess = clip.load("ViT-B/32", device=device)
+
 #################################################################
 # Loop through images at path locations
 img_names = os.listdir(img_dir_path)
-img_names = [img_name for img_name in img_names if "color" in img_name]
+img_names = [img_name for img_name in img_names]
 
 # check if cache exists
 cache_img_exists = os.path.isfile(cache_path+img_dir_name+"_images_vild")
@@ -97,7 +102,7 @@ for img_name in tqdm(img_names):
 	if cache_images and cache_img_exists:
 		image,image_height,image_width,valid_indices,detection_roi_scores,detection_boxes,detection_masks,detection_visual_feat,rescaled_detection_boxes = img2vectorvild_dir[img_name]	
 	else:
-		image,image_height,image_width,valid_indices,detection_roi_scores,detection_boxes,detection_masks,detection_visual_feat,rescaled_detection_boxes  = extract_roi_vild(image_path,session,overall_fig_size,params)
+		image,image_height,image_width,valid_indices,detection_roi_scores,detection_boxes,detection_masks,detection_visual_feat,rescaled_detection_boxes  = extract_roi_vild(image_path,session,params)
 	if cache_images and not cache_img_exists:
 		img2vectorvild_dir[img_name] = [image,image_height,image_width,valid_indices,detection_roi_scores,detection_boxes,detection_masks,detection_visual_feat,rescaled_detection_boxes]
 	
@@ -106,7 +111,7 @@ for img_name in tqdm(img_names):
 	# Compute detection scores, and rank results
 	print(f"Detection visual feat {detection_visual_feat.shape}")
 	print(f"text feat {text_features.shape}")
-	raw_scores = detection_visual_feat.dot(text_features.T)
+	raw_scores = detection_visual_feat.dot(text_features.T) # HERE
 	print(raw_scores)
 	if use_softmax:
 		scores_all = softmax(temperature * raw_scores, axis=-1)
@@ -115,6 +120,8 @@ for img_name in tqdm(img_names):
 
 	indices = np.argsort(-np.max(scores_all, axis=1))  # Results are ranked by scores
 	indices_fg = indices#np.array([i for i in indices if np.argmax(scores_all[i]) != 0])
+
+	############ TODO? put these values into a CSV
 
 	#################################################################
 	# Plot detected boxes on the input image.
@@ -140,14 +147,17 @@ for img_name in tqdm(img_names):
 			    min_score_thresh=min_rpn_score_thresh,
 			    skip_scores=False,
 			    skip_labels=True)
-
+	
 	if not headless and vis_boxes:
 		plt.figure(figsize=overall_fig_size)
 		plt.imshow(image_with_detections)
 		plt.axis('off')
 		plt.title('Detected objects and RPN scores')
 		#plt.show()
-		plt.savefig(f"plots/{img_name}_plot.png")
+		# plt.savefig(f"plots/{img_name}_plot.png") original plot path
+		# changed where plots are saved
+		plt.savefig(f"/home/ifrah/longterm_semantic_map/strands.pdc.kth.se/public/strands.pdc.kth.se/public/plots/{img_name}_plot.png")
+
 
 
 	#################################################################

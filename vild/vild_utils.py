@@ -604,10 +604,12 @@ def display_image(path_or_array, size=(10, 10)):
   else:
     image = path_or_array
   
-  plt.figure(figsize=size)
-  plt.imshow(image)
-  plt.axis('off')
-  plt.show()
+    plt.figure(figsize=size)
+    plt.imshow(image)
+    plt.axis('off')
+    plt.show()
+		# plt.savefig(f"{}/{img_name}_plot.png")
+
 
 def configire_matplotlib_settings():  
   # Global matplotlib settings
