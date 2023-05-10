@@ -122,8 +122,6 @@ class NLMap():
 		self.categories = [{'name': item, 'id': idx+1,} for idx, item in enumerate(self.category_names)]
 		self.category_indices = {cat['id']: cat for cat in self.categories}
 
-
-
 		### Cache path
 		self.cache_path = f"{self.config['paths']['cache_dir']}/{self.config['dir_names']['data']}"
 	
@@ -132,7 +130,10 @@ class NLMap():
 		
 		### Image initialization
 		self.image_names = os.listdir(self.data_dir_path)
-		self.image_names = [image_name for image_name in self.image_names if "color" in image_name]
+		if self.config["our_method"].getboolean("use_our_method"): # huda edit
+			self.image_names = [image_name for image_name in self.image_names if ("label" not in image_name)] # only includes the actual full rgb images
+		else:
+			self.image_names = [image_name for image_name in self.image_names if "color" in image_name]
 
 		###########################################################################################################
 		######### Image embeddings
@@ -141,6 +142,39 @@ class NLMap():
 		self.cache_image_exists = os.path.isfile(f"{self.config['paths']['cache_dir']}/{self.config['dir_names']['data']}_images_vild")
 
 		## huda TODO populate the ground truth dictionary (class variable)
+		self.ground_truths = {}
+        # dictionary from image name to a list of tuples containing the ground truth label, bounding box coordinates, and centroid of object
+        # the the extract pose function uses this dictionary to find a matching image name and a matching bbox for the inputs. If it matches, return the centroid
+
+		if self.config["our_method"].getboolean("use_our_method"):
+			for filename in os.listdir(self.data_dir_path):
+				end_index = filename.find(".")
+				# xml_names = [xml_file for xml_file in os.listdir(self.data_dir_path) \
+				# if (filename[0:end_index] in str(xml_file)) and ".xml" in str(xml_file)]
+
+				# populating the ground truth dictionary for each image
+				print(filename)
+				if ".jpg" in filename and "label" not in filename:
+					label_names = [label for label in os.listdir(self.data_dir_path) \
+								if ((filename[0:end_index] in str(label)) and ".jpg" in str(label) and "label" in str(label))]
+					i = 0
+					for label_name in label_names:
+						rmin, rmax, cmin, cmax = self.get_box(label_name)
+						parsed_xml = ET.parse(os.path.join(self.data_dir_path, label_name[:-3] + "xml"))
+						root = parsed_xml.getroot()
+						# each image is mapped to a tuple of the form:
+						# (string representing ground truth label, list of ints for bounding box coordinates, list of floats for ground truth centroid)
+						# we extract the centroid from the ground truth .xml file
+						if filename not in self.ground_truths:
+							self.ground_truths[filename] = []
+						if "2014" in label_name: 
+							self.ground_truths[filename].append((root.attrib["label"], [rmin, rmax, cmin, cmax], [float(i) for i in root[0].text.split(" ")]))
+						if "2016" in label_name or "2015" in label_name:
+							self.ground_truths[filename].append((root.attrib["label"], [rmin, rmax, cmin, cmax], [float(i) for i in root[2].text.split(" ")]))
+						i += 1
+				
+			print(self.ground_truths)
+
 
 		if self.config["cache"].getboolean("images") and self.cache_image_exists: #if image cache should be used and it exists, load it in
 			self.image2vectorvild_dir = pickle.load(open(f"{self.cache_path}_images_vild","rb"))
@@ -293,11 +327,15 @@ class NLMap():
 
 						self.save_anno_boxes(image_name,anno_idx, scores, raw_image, segmentations, rpn_score, crop, x1,x2,y1,y2)
 					
-					# 	# TODO 3d_position does not get initialized if there are no ground truths associated with that image.
-					_3d_poisiton = self.extract_3d_position(image_name, x1,x2,y1,y2)
-					embedding = np.append(detection_visual_feat[anno_idx],_3d_poisiton)
-					embedding = np.append(embedding,[y1, x1, y2, x2 ])
-					embedding_points.append(embedding)
+					if self.config["our_method"].getboolean("use_our_method"): # huda edit
+						# 3d_position does not get initialized if there are no ground truths associated with that image.
+						_3d_poisiton = self.extract_pose_from_xml(image_name, x1,y1,x2,y2)
+					else:
+						_3d_poisiton = self.extract_3d_position(image_name, x1,x2,y1,y2)
+					if _3d_poisiton != None:
+						embedding = np.append(detection_visual_feat[anno_idx],_3d_poisiton)
+						embedding = np.append(embedding,[y1, x1, y2, x2 ])
+						embedding_points.append(embedding)
 					# TODO: fig_size_w and h are a little hardcoded, make more general?
 					
 				
@@ -495,7 +533,43 @@ class NLMap():
 
 		#TODO: what should bb_size be for z? Right now, just making it same as x. Also needs to be axis aligned
 		return transformed_point
+	
+	def extract_pose_from_xml(self, filename, xmin,xmax,ymin,ymax):
+				'''
+				this method returns the centroid ground truth from the strands dataset
+				if there is a corresponding bounding box in the dataset for the one given
+				'''
+				tolerance = 25 # the tolerated difference between the predicted bounding box and the ground truth (for each corner of the bounding box)
+				
+				# find the corresponding ground truth based on the bounding box
+				if filename in self.ground_truths:
+					for box_centroid in self.ground_truths[filename]:
+						indexs = box_centroid[1]
+						rmin = indexs[0]
+						rmax = indexs[1]
+						cmin = indexs[2]
+						cmax = indexs[3]
 
+						if abs(cmin - ymin) < tolerance and abs(cmax - ymax) < tolerance \
+							and abs(rmax - xmax) < tolerance and abs(rmin - xmin) < tolerance:
+							return box_centroid[2]
+					print(f"there are no corresponding ground truths in the dataset at [xmin,xmax,ymin,ymax = {[xmin,xmax,ymin,ymax]} for {filename}")
+				else:
+						print(f"there are no ground truths in the dataset for {filename}")
+
+	def get_box(self, filename):
+		path = os.path.join("/home/ifrah/longterm_semantic_map/combined_moving_static_KTH", filename)
+		# path = filename
+		img = cv2.imread(path)
+		# print(img.shape)
+		rows = np.any(img, axis=1)
+		cols = np.any(img, axis=0)
+		# print(rows, "space", cols)
+		# print(np.any(rows), np.any(cols))
+		rmin, rmax = np.where(rows)[0][[0, -1]] # y
+		cmin, cmax = np.where(cols)[0][[0, -1]] # x
+		return rmin, rmax, cmin, cmax
+	
 	def go_to_and_pick_top_k(self, category_name):
 		assert self.config["robot"].getboolean("use_robot")
 		with bosdyn.client.lease.LeaseKeepAlive(self.lease_client, must_acquire=True, return_at_exit=True):
