@@ -153,7 +153,7 @@ class NLMap():
 				# if (filename[0:end_index] in str(xml_file)) and ".xml" in str(xml_file)]
 
 				# populating the ground truth dictionary for each image
-				print(filename)
+				# print(filename)
 				if ".jpg" in filename and "label" not in filename:
 					label_names = [label for label in os.listdir(self.data_dir_path) \
 								if ((filename[0:end_index] in str(label)) and ".jpg" in str(label) and "label" in str(label))]
@@ -162,7 +162,7 @@ class NLMap():
 						rmin, rmax, cmin, cmax = self.get_box(label_name)
 						parsed_xml = ET.parse(os.path.join(self.data_dir_path, label_name[:-3] + "xml"))
 						root = parsed_xml.getroot()
-						# each image is mapped to a tuple of the form:
+						# each image is mapped to a list of tuples of the form:
 						# (string representing ground truth label, list of ints for bounding box coordinates, list of floats for ground truth centroid)
 						# we extract the centroid from the ground truth .xml file
 						if filename not in self.ground_truths:
@@ -656,5 +656,5 @@ if __name__ == "__main__":
 
 	### Example things to do 
 	#nlmap.viz_pointcloud()
-	# nlmap.viz_top_k(viz_2d=False,viz_pointcloud=False)
+	nlmap.viz_top_k(viz_2d=False,viz_pointcloud=False)
 	# nlmap.go_to_and_pick_top_k("Cup")
