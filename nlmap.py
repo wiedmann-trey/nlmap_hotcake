@@ -52,6 +52,17 @@ import random
 
 import xml.etree.ElementTree as ET
 
+import pandas as pd
+from sklearn.manifold import TSNE
+import plotly.express as px
+from sklearn.neighbors import NearestNeighbors
+
+from pathlib import Path
+import PIL.Image
+import shutil
+
+FEAT_SIZE = 512
+
 class NLMap():
 	def __init__(self,config_path="./configs/example.ini"):
 		###########################################################################################################
@@ -142,9 +153,15 @@ class NLMap():
 
 		## huda TODO populate the ground truth dictionary (class variable)
 
+		columns = ['position_x', 'position_y','position_z', "bounding_box_y1","bounding_box_x1",  "bounding_box_y2","bounding_box_x2",'image_index',"pred_anno_idx", 'ground_truth_anno_idx']
+		columns_emb_name = [f"vild_embedding_{i}" for i in range(FEAT_SIZE)]
+		columns = np.append(columns, columns_emb_name)
+		
 		if self.config["cache"].getboolean("images") and self.cache_image_exists: #if image cache should be used and it exists, load it in
 			self.image2vectorvild_dir = pickle.load(open(f"{self.cache_path}_images_vild","rb"))
 			self.image2vectorclip_dir = pickle.load(open(f"{self.cache_path}_images_clip","rb"))
+			df = pd.read_csv(f"{self.cache_path}_embeddings.csv",  dtype={'image_index': 'object'}, index_col=0)
+			cluster_count_df = pd.read_csv(f"{self.cache_path}_cluster.csv", index_col=0)
 
 			if not self.config["our_method"].getboolean("use_our_method"):
 				self.topk_vild_dir= pickle.load(open(f"{self.cache_path}_topk_vild","rb"))
@@ -170,8 +187,13 @@ class NLMap():
 			self.image2vectorclip_dir = {}
 			embedding_points = []
 			count = 0 
+			
+			df = pd.DataFrame()
+			df = pd.DataFrame(columns = columns)
+			self.image_names = sorted(self.image_names)
 			for image_name in tqdm(self.image_names):
 				count+=1
+				img_index = int(image_name.split("_")[1][0])
 				torch.cuda.empty_cache()
 				print(image_name)
 				image_path = f"{self.data_dir_path}/{image_name}"
@@ -295,9 +317,19 @@ class NLMap():
 					
 					# 	# TODO 3d_position does not get initialized if there are no ground truths associated with that image.
 					_3d_poisiton = self.extract_3d_position(image_name, x1,x2,y1,y2)
-					embedding = np.append(detection_visual_feat[anno_idx],_3d_poisiton)
-					embedding = np.append(embedding,[y1, x1, y2, x2 ])
-					embedding_points.append(embedding)
+					embedding = np.append(_3d_poisiton, [y1, x1, y2, x2 ])
+					embedding = np.append(embedding, [img_index])
+					embedding = np.append(embedding, [crop_fname])
+					embedding = np.append(embedding, [None]) # TODO add ground truth object name 
+					embedding = np.append(embedding, detection_visual_feat[anno_idx])
+
+					## order of the columns
+					# ['position_x', 'position_y','position_z', 
+					# "bounding_box_y1","bounding_box_x1",  "bounding_box_y2","bounding_box_x2" 
+					# 'image_index',"pred_anno_idx", 
+					# 'ground_truth_anno_idx', 'embedding]
+
+					df.loc[len(df.index)] = embedding
 					# TODO: fig_size_w and h are a little hardcoded, make more general?
 					
 				
@@ -327,17 +359,55 @@ class NLMap():
 					pickle.dump(self.topk_vild_dir,open(f"{self.cache_path}_topk_vild","wb"))
 					pickle.dump(self.topk_clip_dir,open(f"{self.cache_path}_topk_clip","wb"))
 
-		if self.config["cache"].getboolean("images"):
-			pickle.dump(embedding_points,open(f"{self.cache_path}_clustering_points","wb"))
-
 		print("clustering starts")
-		embedding_points =  np.asarray(embedding_points)
-		clustering = DBSCAN(eps=0.01, min_samples=3)
-		y_pred = clustering.fit_predict(embedding_points)
-		plt.figure(figsize=(10,6))
-		plt.scatter(embedding_points[:,0], embedding_points[:,1],c=y_pred, cmap='Paired')
-		plt.title("Clusters determined by DBSCAN")
-		plt.savefig(f"{self.figs_dir_path}/clustering.jpg", bbox_inches='tight')
+		print(df.columns)
+		subset_columns = np.append(columns_emb_name, ['position_x', 'position_y','position_z'])
+		objects_df = df[subset_columns] 
+
+		if self.config['our_method']['analysis']:
+		### do  clustering analysis
+			neighbors = NearestNeighbors(n_neighbors=5)
+			neighbors_fit = neighbors.fit(objects_df)
+			distances, indices = neighbors_fit.kneighbors(objects_df)
+			plt.figure(figsize=(10,6))
+			distances = np.sort(distances, axis=0)
+			distances = distances[:,1]
+			plt.plot(distances)
+			plt.title("Clusters determined by DBSCAN")
+			plt.savefig(f"{self.figs_dir_path}/distances.jpg", bbox_inches='tight')
+		
+		clustering = DBSCAN(eps=3, min_samples=5).fit(objects_df)
+		objects_df.loc[:,'cluster'] = clustering.labels_ 
+
+		cluster_dir = Path(self.config['paths']['cluster_dir'])
+		shutil.rmtree(cluster_dir)
+		## reorganize image folder based on clusters
+		for index, row in objects_df.iterrows():
+			cluster_number = int(row["cluster"])
+			if cluster_number != -1:
+				crop_pil = PIL.Image.open(df.iloc[index]["pred_anno_idx"])
+				cluster_dir.mkdir(parents=True, exist_ok=True)
+				Path(self.config['paths']['cluster_dir']+"/"+ str(cluster_number)).mkdir(parents=True, exist_ok=True)
+				filename = df.iloc[index]["pred_anno_idx"].split("/")[-1]
+				crop_pil.save(self.config['paths']['cluster_dir'] + "/" + str(cluster_number)+ "/" + filename)
+
+
+		cluster_count_df = objects_df.cluster.value_counts().to_frame()
+		if self.config["cache"].getboolean("images"):
+			print(df["image_index"].dtypes)
+			df.to_csv(f"{self.cache_path}_embeddings.csv")
+			cluster_count_df.to_csv(f"{self.cache_path}_cluster.csv")
+		X_embedded = TSNE(n_components=2, perplexity = 3).fit_transform(objects_df)
+		objects_df["x_component"]=X_embedded[:,0]
+		objects_df["y_component"]=X_embedded[:,1]
+		objects_df["image_index"] = df["image_index"]
+		objects_df["pred_anno_idx"] = df["pred_anno_idx"]
+
+		fig = px.scatter(objects_df, x="x_component", y="y_component", hover_data=["cluster", "pred_anno_idx"], color = "image_index")
+		fig.update_layout(
+			height=800)
+		fig.write_html(f"{self.figs_dir_path}/clustering.html")
+
 
 		print("done with storing cache of embedding is done")	
 
