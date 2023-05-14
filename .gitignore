@@ -7,5 +7,7 @@ __pycache__/*
 spot_utils/__pycache__/*
 vild/image_path_v2/*
 vild/*
+get_bounding_box.py
 nlmap_huda.py
 configs/example_dev_ifrah.ini
+clusters/*
