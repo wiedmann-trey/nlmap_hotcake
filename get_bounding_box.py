@@ -77,22 +77,62 @@ class Test():
         rmin, rmax = np.where(rows)[0][[0, -1]] # y
         cmin, cmax = np.where(cols)[0][[0, -1]] # x
 
-        return rmin, rmax, cmin, cmax
+        # return rmin, rmax, cmin, cmax
+        return [cmin, rmin, cmax, rmax]
+    
+    def IOU(self, box1, box2):
+        """ We assume that the box follows the format:
+            box1 = [x1,y1,x2,y2], and box2 = [x3,y3,x4,y4],
+            where (x1,y1) and (x3,y3) represent the top left coordinate,
+            and (x2,y2) and (x4,y4) represent the bottom right coordinate """
+        x1, y1, x2, y2 = box1	
+        x3, y3, x4, y4 = box2
+        x_inter1 = max(x1, x3)
+        y_inter1 = max(y1, y3)
+        x_inter2 = min(x2, x4)
+        y_inter2 = min(y2, y4)
+        width_inter = abs(x_inter2 - x_inter1)
+        height_inter = abs(y_inter2 - y_inter1)
+        area_inter = width_inter * height_inter
+        width_box1 = abs(x2 - x1)
+        height_box1 = abs(y2 - y1)
+        width_box2 = abs(x4 - x3)
+        height_box2 = abs(y4 - y3)
+        area_box1 = width_box1 * height_box1
+        area_box2 = width_box2 * height_box2
+        area_union = area_box1 + area_box2 - area_inter
+        iou = area_inter / area_union
+        return iou
 
 test = Test()
-assert test.extract_pose_from_xml("20140905_patrol_run_30_room_7_rgb_0001.jpg", 304, 367, 328, 407) == [0.633533, 0.410255, 2.12958, 0.0]
-assert test.get_box("20140905_patrol_run_30_room_7_rgb_0001_label_0.jpg") == (304, 367, 328, 407)
+# assert test.extract_pose_from_xml("20140905_patrol_run_30_room_7_rgb_0001.jpg", 304, 367, 328, 407) == [0.633533, 0.410255, 2.12958, 0.0]
+# assert test.get_box("20140905_patrol_run_30_room_7_rgb_0001_label_0.jpg") == (304, 367, 328, 407)
 
-# test for picture with multiple labels
-assert test.extract_pose_from_xml("20140910_patrol_run_79_room_2_rgb_0006.jpg", 176, 271, 264, 343) == [1.45471, 0.762191, -0.406816, 0.0]
-assert test.extract_pose_from_xml("20140910_patrol_run_79_room_2_rgb_0006.jpg", 160, 239, 312, 407) == [2.87556, 1.47612, -1.22137, 0.0]
+# # test for picture with multiple labels
+# assert test.extract_pose_from_xml("20140910_patrol_run_79_room_2_rgb_0006.jpg", 176, 271, 264, 343) == [1.45471, 0.762191, -0.406816, 0.0]
+# assert test.extract_pose_from_xml("20140910_patrol_run_79_room_2_rgb_0006.jpg", 160, 239, 312, 407) == [2.87556, 1.47612, -1.22137, 0.0]
 
-assert test.extract_pose_from_xml("20140908_patrol_run_41_room_3_rgb_0009.jpg", 208, 247, 368, 463) == [-0.418084, 1.9244, -2.21457, 0.0]
-assert test.extract_pose_from_xml("20140908_patrol_run_41_room_3_rgb_0009.jpg", 128, 463, 296, 543) == [-0.193949, 1.50212, -1.25298, 0.0]
-assert test.extract_pose_from_xml("20140908_patrol_run_41_room_3_rgb_0009.jpg", 232, 271, 416, 447) == [-0.394846, 1.80753, -1.88986, 0.0]
+# assert test.extract_pose_from_xml("20140908_patrol_run_41_room_3_rgb_0009.jpg", 208, 247, 368, 463) == [-0.418084, 1.9244, -2.21457, 0.0]
+# assert test.extract_pose_from_xml("20140908_patrol_run_41_room_3_rgb_0009.jpg", 128, 463, 296, 543) == [-0.193949, 1.50212, -1.25298, 0.0]
+# assert test.extract_pose_from_xml("20140908_patrol_run_41_room_3_rgb_0009.jpg", 232, 271, 416, 447) == [-0.394846, 1.80753, -1.88986, 0.0]
 
 
 # print(test.get_box("20140911_patrol_run_84_room_3_rgb_0010_label_0.jpg"))
+# box1 = test.get_box("20140911_patrol_run_84_room_3_rgb_0010_label_0.jpg")
+# box2 = test.get_box("20140911_patrol_run_84_room_3_rgb_0010_label_1.jpg")
+# print(f"box1: {box1}, box2: {box2}")
+# x1, y1, x2, y2 = box1	
+# x3, y3, x4, y4 = box2
+# print(test.IOU(box1, box2))
+# print(test.IOU([0, 4, 5, 6], [100, 200, 300, 400]))
+print(test.get_box("20140820_patrol_run_2_room_1_rgb_0009_label_1.jpg"))
+
+from helpers import intersect_over_gt
+
+print(intersect_over_gt({'x1': 463, 'x2': 486, 'y1': 249, 'y2': 276}, {'x1':456, 'x2':487, 'y1':240, 'y2':279}))
+# [463, 486, 249, 276]
+# print(test.get_box("20140911_patrol_run_84_room_3_rgb_0012_label_0.jpg")) # high x low y
+
 # print(test.get_box("/home/ifrah/Desktop/contract-fr-superb-101-sq.jpg"))
 # print(test.get_box("20140820_patrol_run_2_room_1_rgb_0007_label_0.jpg"))
 

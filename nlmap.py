@@ -61,6 +61,8 @@ from pathlib import Path
 import PIL.Image
 import shutil
 
+from helpers import intersect_over_gt
+
 FEAT_SIZE = 512
 
 class NLMap():
@@ -188,7 +190,7 @@ class NLMap():
 
 
 
-		columns = ['position_x', 'position_y','position_z', "bounding_box_y1","bounding_box_x1",  "bounding_box_y2","bounding_box_x2",'image_index',"pred_anno_idx", 'ground_truth_anno_idx']
+		columns = ['position_x', 'position_y','position_z', 'position_?', "bounding_box_y1","bounding_box_x1",  "bounding_box_y2","bounding_box_x2",'image_index',"pred_anno_idx", 'ground_truth_anno_idx']
 		columns_emb_name = [f"vild_embedding_{i}" for i in range(FEAT_SIZE)]
 		columns = np.append(columns, columns_emb_name)
 		
@@ -231,9 +233,9 @@ class NLMap():
 					continue
 				count+=1
 
-				if count == 5:
-					break
-				img_index = int(image_name.split("_")[-3])
+				# if count == 15:
+					# break
+				img_index = int(image_name.split("_")[-1].strip(".jpg"))
 				print(image_name.split("_"))
 				print(img_index)
 				# exit()
@@ -357,22 +359,22 @@ class NLMap():
 							self.priority_queue_vild_dir[category_name].put(new_item) #TODO: make this an object to more interpretable
 
 						self.save_anno_boxes(image_name,anno_idx, scores, raw_image, segmentations, rpn_score, crop, x1,x2,y1,y2)
-					
+					gt_name = None
 					# 	# TODO 3d_position does not get initialized if there are no ground truths associated with that image.
 					if self.config["our_method"].getboolean("use_our_method"): # huda edit
 						# 3d_position does not get initialized if there are no ground truths associated with that image.
-						_3d_poisiton = self.extract_pose_from_xml(image_name, x1,y1,x2,y2)
+						_3d_poisiton, gt_name = self.extract_pose_from_xml(image_name, x1,x2,y1,y2)
 					else:
 						_3d_poisiton = self.extract_3d_position(image_name, x1,x2,y1,y2)
-					
+					#_3d_poisiton = _3d_poisiton.pop(3)
 					embedding = None
 					# embedding = [1] * 512
-					_3d_poisiton = [1,2,3] ##fixed the position to check the flow for the merge
+					#_3d_poisiton = [1,2,3] ##fixed the position to check the flow for the merge
 					if _3d_poisiton != None:
 						embedding = np.append(_3d_poisiton, [y1, x1, y2, x2 ])
 						embedding = np.append(embedding, [img_index])
 						embedding = np.append(embedding, [crop_fname])
-						embedding = np.append(embedding, [None]) # TODO add ground truth object name 
+						embedding = np.append(embedding, [gt_name]) # TODO add ground truth object name 
 						embedding = np.append(embedding, detection_visual_feat[anno_idx])
 
 						## order of the columns
@@ -380,6 +382,7 @@ class NLMap():
 						# "bounding_box_y1","bounding_box_x1",  "bounding_box_y2","bounding_box_x2" 
 						# 'image_index',"pred_anno_idx", 
 						# 'ground_truth_anno_idx', 'embedding]
+						# ['position_x', 'position_y','position_z', "bounding_box_y1","bounding_box_x1",  "bounding_box_y2","bounding_box_x2",'image_index',"pred_anno_idx", 'ground_truth_anno_idx', 'embedding']
 
 						df.loc[len(df.index)] = embedding
 					print("EMBEDDING", embedding, crop_fname)
@@ -456,8 +459,10 @@ class NLMap():
 		objects_df["y_component"]=X_embedded[:,1]
 		objects_df["image_index"] = df["image_index"]
 		objects_df["pred_anno_idx"] = df["pred_anno_idx"]
+		objects_df["ground_truth_anno_idx"] = df["ground_truth_anno_idx"]
+		
 
-		fig = px.scatter(objects_df, x="x_component", y="y_component", hover_data=["cluster", "pred_anno_idx"], color = "image_index")
+		fig = px.scatter(objects_df, x="x_component", y="y_component", hover_data=["cluster", "ground_truth_anno_idx"], color = "image_index")
 		fig.update_layout(
 			height=800)
 		fig.write_html(f"{self.figs_dir_path}/clustering.html")
@@ -621,27 +626,28 @@ class NLMap():
 		return transformed_point
 	
 	def extract_pose_from_xml(self, filename, xmin,xmax,ymin,ymax):
-				'''
-				this method returns the centroid ground truth from the strands dataset
-				if there is a corresponding bounding box in the dataset for the one given
-				'''
-				tolerance = 25 # the tolerated difference between the predicted bounding box and the ground truth (for each corner of the bounding box)
-				
-				# find the corresponding ground truth based on the bounding box
-				if filename in self.ground_truths:
-					for box_centroid in self.ground_truths[filename]:
-						indexs = box_centroid[1]
-						rmin = indexs[0]
-						rmax = indexs[1]
-						cmin = indexs[2]
-						cmax = indexs[3]
-
-						if abs(cmin - ymin) < tolerance and abs(cmax - ymax) < tolerance \
-							and abs(rmax - xmax) < tolerance and abs(rmin - xmin) < tolerance:
-							return box_centroid[2]
-					print(f"there are no corresponding ground truths in the dataset at [xmin,xmax,ymin,ymax = {[xmin,xmax,ymin,ymax]} for {filename}")
-				else:
-						print(f"there are no ground truths in the dataset for {filename}")
+		'''
+		this method returns the centroid ground truth from the strands dataset
+		if there is a corresponding bounding box in the dataset for the one given
+		'''
+		tolerance = .65 # the tolerated difference between the predicted bounding box and the ground truth (for each corner of the bounding box)
+		
+		# find the corresponding ground truth based on the bounding box
+		if filename in self.ground_truths:
+			for box_centroid in self.ground_truths[filename]:
+				indexs = box_centroid[1]
+				rmin = indexs[0]
+				rmax = indexs[1]
+				cmin = indexs[2]
+				cmax = indexs[3]
+				io_gt = intersect_over_gt({'x1': xmin, 'x2': xmax, 'y1': ymin, 'y2': ymax}, {'x1':cmin, 'x2':cmax, 'y1':rmin, 'y2':rmax})
+				if io_gt > tolerance:
+					print(f'io_gt: {io_gt}')
+					return box_centroid[2], box_centroid[0]
+			print(f"there are no corresponding ground truths in the dataset at [xmin,xmax,ymin,ymax = {[xmin,xmax,ymin,ymax]} for {filename}")
+		else:
+				print(f"there are no ground truths in the dataset for {filename}")
+		return None, None
 
 	def get_box(self, filename):
 		path = os.path.join("/home/ifrah/longterm_semantic_map/combined_moving_static_KTH", filename)

@@ -11,3 +11,4 @@ get_bounding_box.py
 nlmap_huda.py
 configs/example_dev_ifrah.ini
 clusters/*
+*.txt
