@@ -9,6 +9,8 @@ from queue import PriorityQueue
 from PIL import Image
 import clip
 import torch
+import time
+import copy
 
 from nlmap_utils import get_best_clip_vild_dirs
 from spot_utils.utils import pixel_to_vision_frame, pixel_to_vision_frame_depth_provided, arm_object_grasp, open_gripper
@@ -156,6 +158,9 @@ class NLMap():
 
 		## huda TODO populate the ground truth dictionary (class variable)
 		self.ground_truths = {}
+		self.object_image_list = {}
+		self.detected_ground_truths = {}
+		self.learning_data = []
         # dictionary from image name to a list of tuples containing the ground truth label, bounding box coordinates, and centroid of object
         # the the extract pose function uses this dictionary to find a matching image name and a matching bbox for the inputs. If it matches, return the centroid
 
@@ -173,24 +178,30 @@ class NLMap():
 					i = 0
 					for label_name in label_names:
 						rmin, rmax, cmin, cmax = self.get_box(label_name)
+						label_idx = int(label_name[:-4].split('_')[-1])
 						parsed_xml = ET.parse(os.path.join(self.data_dir_path, label_name[:-3] + "xml"))
 						root = parsed_xml.getroot()
 						# each image is mapped to a list of tuples of the form:
 						# (string representing ground truth label, list of ints for bounding box coordinates, list of floats for ground truth centroid)
 						# we extract the centroid from the ground truth .xml file
+						if root.attrib["label"] not in self.object_image_list:
+							self.object_image_list[root.attrib["label"]] = []
+						self.object_image_list[root.attrib["label"]].append(filename)
+
 						if filename not in self.ground_truths:
 							self.ground_truths[filename] = []
 						if "2014" in label_name: 
-							self.ground_truths[filename].append((root.attrib["label"], [rmin, rmax, cmin, cmax], [float(i) for i in root[0].text.split(" ")]))
+							self.ground_truths[filename].append((root.attrib["label"], [rmin, rmax, cmin, cmax], [float(i) for i in root[0].text.split(" ")], label_idx))
 						if "2016" in label_name or "2015" in label_name:
-							self.ground_truths[filename].append((root.attrib["label"], [rmin, rmax, cmin, cmax], [float(i) for i in root[2].text.split(" ")]))
+							self.ground_truths[filename].append((root.attrib["label"], [rmin, rmax, cmin, cmax], [float(i) for i in root[2].text.split(" ")], label_idx))
 						i += 1
 				
 			print(self.ground_truths)
+			print(self.object_image_list)
 
 
 
-		columns = ['position_x', 'position_y','position_z', 'position_?', "bounding_box_y1","bounding_box_x1",  "bounding_box_y2","bounding_box_x2",'image_index',"pred_anno_idx", 'ground_truth_anno_idx']
+		columns = ['position_x', 'position_y','position_z', 'position_?', "bounding_box_y1","bounding_box_x1",  "bounding_box_y2","bounding_box_x2",'image_index',"pred_anno_idx", 'ground_truth_label_name', 'ground_truth_anno_idx', "ground_truth_bounding_box_y1","ground_truth_bounding_box_x1",  "ground_truth_bounding_box_y2","ground_truth_bounding_box_x2"]
 		columns_emb_name = [f"vild_embedding_{i}" for i in range(FEAT_SIZE)]
 		columns = np.append(columns, columns_emb_name)
 		
@@ -233,8 +244,8 @@ class NLMap():
 					continue
 				count+=1
 
-				# if count == 15:
-					# break
+				if count == 15:
+					break
 				img_index = int(image_name.split("_")[-1].strip(".jpg"))
 				print(image_name.split("_"))
 				print(img_index)
@@ -360,13 +371,20 @@ class NLMap():
 
 						self.save_anno_boxes(image_name,anno_idx, scores, raw_image, segmentations, rpn_score, crop, x1,x2,y1,y2)
 					gt_name = None
+					r1, r2, c1, c2 = None, None, None, None
+					gt_idx = None
 					# 	# TODO 3d_position does not get initialized if there are no ground truths associated with that image.
 					if self.config["our_method"].getboolean("use_our_method"): # huda edit
 						# 3d_position does not get initialized if there are no ground truths associated with that image.
-						_3d_poisiton, gt_name = self.extract_pose_from_xml(image_name, x1,x2,y1,y2)
+						gt_name, gt_bb, _3d_poisiton, gt_idx = self.extract_pose_from_xml(image_name, x1,x2,y1,y2)
+						if gt_bb:
+							r1, r2, c1, c2 = gt_bb 
 					else:
 						_3d_poisiton = self.extract_3d_position(image_name, x1,x2,y1,y2)
-					#_3d_poisiton = _3d_poisiton.pop(3)
+
+					if image_name not in self.detected_ground_truths:
+							self.detected_ground_truths[image_name] = set()
+
 					embedding = None
 					# embedding = [1] * 512
 					#_3d_poisiton = [1,2,3] ##fixed the position to check the flow for the merge
@@ -374,15 +392,22 @@ class NLMap():
 						embedding = np.append(_3d_poisiton, [y1, x1, y2, x2 ])
 						embedding = np.append(embedding, [img_index])
 						embedding = np.append(embedding, [crop_fname])
-						embedding = np.append(embedding, [gt_name]) # TODO add ground truth object name 
+						embedding = np.append(embedding, [gt_name])
+						embedding = np.append(embedding, [gt_idx])
+						embedding = np.append(embedding, [r1, c1, r2, c2])
 						embedding = np.append(embedding, detection_visual_feat[anno_idx])
-
+						if gt_idx != None:
+							self.detected_ground_truths[image_name].add(gt_idx)
+							self.learning_data.append((detection_visual_feat[anno_idx], _3d_poisiton[:-1], gt_name))
+						
 						## order of the columns
-						# ['position_x', 'position_y','position_z', 
-						# "bounding_box_y1","bounding_box_x1",  "bounding_box_y2","bounding_box_x2" 
-						# 'image_index',"pred_anno_idx", 
-						# 'ground_truth_anno_idx', 'embedding]
-						# ['position_x', 'position_y','position_z', "bounding_box_y1","bounding_box_x1",  "bounding_box_y2","bounding_box_x2",'image_index',"pred_anno_idx", 'ground_truth_anno_idx', 'embedding']
+						# ['position_x', 'position_y','position_z', 'position_?', 
+						# "bounding_box_y1","bounding_box_x1",  "bounding_box_y2",
+						# "bounding_box_x2",'image_index',"pred_anno_idx", 
+						# 'ground_truth_label_name', 'ground_truth_anno_idx', 
+						# "ground_truth_bounding_box_y1","ground_truth_bounding_box_x1",
+						#   "ground_truth_bounding_box_y2","ground_truth_bounding_box_x2"]
+						# embeddings
 
 						df.loc[len(df.index)] = embedding
 					print("EMBEDDING", embedding, crop_fname)
@@ -415,6 +440,40 @@ class NLMap():
 				if self.config["cache"].getboolean("images"):
 					pickle.dump(self.topk_vild_dir,open(f"{self.cache_path}_topk_vild","wb"))
 					pickle.dump(self.topk_clip_dir,open(f"{self.cache_path}_topk_clip","wb"))
+
+		gt_detection_df = pd.DataFrame(columns=["Image Path", "Ground Truth Labels", "Detected Labels", "Undetected Labels", "Number Undetected"], index=self.detected_ground_truths.keys())
+
+		# ground truth detection stats
+		gt_detection_stats = {}
+		detection_count = 0
+		for file in self.detected_ground_truths.keys():
+			gt = self.ground_truths[file]
+			gt_detection_stats[file] = set(range(len(gt)))
+			detection_count += len(gt_detection_stats[file])
+
+		total_gt_count = detection_count
+		gt_detection_df["Ground Truth Labels"] = pd.Series(copy.deepcopy(gt_detection_stats))
+
+		print(f'total ground truth count: {detection_count}')
+
+		for file, detections in self.detected_ground_truths.items():
+			for detection in detections:
+				if detection in gt_detection_stats[file]:
+					gt_detection_stats[file].remove(detection)
+					detection_count -= 1
+
+		gt_detection_df["Detected Labels"] = pd.Series(self.detected_ground_truths)
+		gt_detection_df["Undetected Labels"] = pd.Series(gt_detection_stats)
+
+		print(f'undetected ground truths: {detection_count}')
+		print(gt_detection_stats)
+
+		gt_detection_df["Number Undetected"] = gt_detection_df["Undetected Labels"].str.len()
+
+		gt_detection_df.to_csv(f"{self.cache_path}_gt_detections.csv")
+
+		with open(f'{self.cache_path}_gt_stats.txt', 'w') as f:
+			f.write(f'Total Ground Truth Count: {total_gt_count}, Total Undetected: {detection_count}, Total Detected: {total_gt_count-detection_count}, Percent Detected: {(total_gt_count-detection_count)/float(total_gt_count)}')
 
 		print("clustering starts")
 		print(df.columns)
@@ -629,6 +688,12 @@ class NLMap():
 		'''
 		this method returns the centroid ground truth from the strands dataset
 		if there is a corresponding bounding box in the dataset for the one given
+
+		returns:
+		groundtruth object name
+		groundtruth bounding box (y1,y2,x1,x2)
+		groundtruth 3d position (x,y,z,0)
+		groundtruth anno index
 		'''
 		tolerance = .65 # the tolerated difference between the predicted bounding box and the ground truth (for each corner of the bounding box)
 		
@@ -643,11 +708,11 @@ class NLMap():
 				io_gt = intersect_over_gt({'x1': xmin, 'x2': xmax, 'y1': ymin, 'y2': ymax}, {'x1':cmin, 'x2':cmax, 'y1':rmin, 'y2':rmax})
 				if io_gt > tolerance:
 					print(f'io_gt: {io_gt}')
-					return box_centroid[2], box_centroid[0]
+					return box_centroid
 			print(f"there are no corresponding ground truths in the dataset at [xmin,xmax,ymin,ymax = {[xmin,xmax,ymin,ymax]} for {filename}")
 		else:
-				print(f"there are no ground truths in the dataset for {filename}")
-		return None, None
+			print(f"there are no ground truths in the dataset for {filename}")
+		return None, None, None, None
 
 	def get_box(self, filename):
 		path = os.path.join("/home/ifrah/longterm_semantic_map/combined_moving_static_KTH", filename)
@@ -740,12 +805,16 @@ class NLMap():
 
 if __name__ == "__main__":
 	### Parse arguments from command line
+	startTime = time.time()
 	parser = argparse.ArgumentParser()
 	parser.add_argument("-c","--config_path", help="Path to config file", type=str, default="./configs/example.ini")
 	args = parser.parse_args()
 
 	nlmap = NLMap(args.config_path)
 
+	executionTime = (time.time() - startTime)
+	print(f"Execution time: {executionTime} seconds")
+	print(nlmap.learning_data)
 	### Example things to do 
 	#nlmap.viz_pointcloud()
 	# nlmap.viz_top_k(viz_2d=False,viz_pointcloud=False)

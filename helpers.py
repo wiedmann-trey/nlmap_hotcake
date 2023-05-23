@@ -1,3 +1,6 @@
+import torch
+from torch import nn
+
 def intersect_over_gt(bb, gt):
     """
     Calculate the fraction of groundtruth bounding box that is
