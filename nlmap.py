@@ -737,7 +737,7 @@ class NLMap():
 		groundtruth 3d position (x,y,z,0)
 		groundtruth anno index
 		'''
-		tolerance = .5 # the tolerated difference between the predicted bounding box and the ground truth (for each corner of the bounding box)
+		tolerance = int(self.config['our_method']['bbox_overlap_thresh']) # the tolerated difference between the predicted bounding box and the ground truth (for each corner of the bounding box)
 		
 		# find the corresponding ground truth based on the bounding box
 		best_overlap = 0
