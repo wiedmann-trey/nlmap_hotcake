@@ -4,7 +4,7 @@ import os
 import pickle
 from tqdm import tqdm
 import numpy as np
-from collections import defaultdict
+from collections import defaultdict, deque
 from queue import PriorityQueue
 from PIL import Image
 import clip
@@ -63,7 +63,7 @@ from pathlib import Path
 import PIL.Image
 import shutil
 
-from helpers import intersect_over_gt
+from helpers import intersect_over_gt, train_learned_representation
 
 FEAT_SIZE = 512
 
@@ -160,11 +160,16 @@ class NLMap():
 		self.ground_truths = {}
 		self.object_image_list = {}
 		self.detected_ground_truths = {}
-		self.learning_data = []
+		self.learning_data = {}
+		self.learning_data["vild"] = []
+		self.learning_data["position"] = []
+		self.learning_data["label"] = []
+		self.label_dict = {}
         # dictionary from image name to a list of tuples containing the ground truth label, bounding box coordinates, and centroid of object
         # the the extract pose function uses this dictionary to find a matching image name and a matching bbox for the inputs. If it matches, return the centroid
 
 		if self.config["our_method"].getboolean("use_our_method"):
+			label_num = 0
 			for filename in os.listdir(self.data_dir_path):
 				end_index = filename.find(".")
 				# xml_names = [xml_file for xml_file in os.listdir(self.data_dir_path) \
@@ -187,6 +192,9 @@ class NLMap():
 						if root.attrib["label"] not in self.object_image_list:
 							self.object_image_list[root.attrib["label"]] = []
 						self.object_image_list[root.attrib["label"]].append(filename)
+						if root.attrib["label"] not in self.label_dict:
+							self.label_dict[root.attrib["label"]] = label_num
+							label_num += 1
 
 						if filename not in self.ground_truths:
 							self.ground_truths[filename] = []
@@ -196,12 +204,12 @@ class NLMap():
 							self.ground_truths[filename].append((root.attrib["label"], [rmin, rmax, cmin, cmax], [float(i) for i in root[2].text.split(" ")], label_idx))
 						i += 1
 				
-			print(self.ground_truths)
-			print(self.object_image_list)
+			# print(self.ground_truths)
+			# print(self.object_image_list)
 
 
 
-		columns = ['position_x', 'position_y','position_z', 'position_?', "bounding_box_y1","bounding_box_x1",  "bounding_box_y2","bounding_box_x2",'image_index',"pred_anno_idx", 'ground_truth_label_name', 'ground_truth_anno_idx', "ground_truth_bounding_box_y1","ground_truth_bounding_box_x1",  "ground_truth_bounding_box_y2","ground_truth_bounding_box_x2"]
+		columns = ['position_x', 'position_y','position_z', 'position_?', "bounding_box_y1","bounding_box_x1",  "bounding_box_y2","bounding_box_x2", "image_name", 'image_index',"pred_anno_idx", 'ground_truth_label_name', 'ground_truth_anno_idx', "ground_truth_bounding_box_y1","ground_truth_bounding_box_x1",  "ground_truth_bounding_box_y2","ground_truth_bounding_box_x2"]
 		columns_emb_name = [f"vild_embedding_{i}" for i in range(FEAT_SIZE)]
 		columns = np.append(columns, columns_emb_name)
 		
@@ -242,10 +250,11 @@ class NLMap():
 			for image_name in tqdm(self.image_names):
 				if "label" in image_name:
 					continue
-				count+=1
-
-				if count == 15:
+				print(count)
+				max = int(self.config['our_method']['max_images'])
+				if count == max: 
 					break
+				count+=1
 				img_index = int(image_name.split("_")[-1].strip(".jpg"))
 				print(image_name.split("_"))
 				print(img_index)
@@ -390,6 +399,7 @@ class NLMap():
 					#_3d_poisiton = [1,2,3] ##fixed the position to check the flow for the merge
 					if _3d_poisiton != None:
 						embedding = np.append(_3d_poisiton, [y1, x1, y2, x2 ])
+						embedding = np.append(embedding, [image_name])
 						embedding = np.append(embedding, [img_index])
 						embedding = np.append(embedding, [crop_fname])
 						embedding = np.append(embedding, [gt_name])
@@ -398,7 +408,9 @@ class NLMap():
 						embedding = np.append(embedding, detection_visual_feat[anno_idx])
 						if gt_idx != None:
 							self.detected_ground_truths[image_name].add(gt_idx)
-							self.learning_data.append((detection_visual_feat[anno_idx], _3d_poisiton[:-1], gt_name))
+							self.learning_data["vild"].append(detection_visual_feat[anno_idx])
+							self.learning_data["position"].append(_3d_poisiton[:-1])
+							self.learning_data["label"].append(gt_name)
 						
 						## order of the columns
 						# ['position_x', 'position_y','position_z', 'position_?', 
@@ -467,7 +479,7 @@ class NLMap():
 
 		print(f'undetected ground truths: {detection_count}')
 		print(gt_detection_stats)
-
+		print(gt_detection_df)
 		gt_detection_df["Number Undetected"] = gt_detection_df["Undetected Labels"].str.len()
 
 		gt_detection_df.to_csv(f"{self.cache_path}_gt_detections.csv")
@@ -475,59 +487,89 @@ class NLMap():
 		with open(f'{self.cache_path}_gt_stats.txt', 'w') as f:
 			f.write(f'Total Ground Truth Count: {total_gt_count}, Total Undetected: {detection_count}, Total Detected: {total_gt_count-detection_count}, Percent Detected: {(total_gt_count-detection_count)/float(total_gt_count)}')
 
+		if self.config['our_method'].getboolean('learn_representation'):
+			train_learned_representation(self.learning_data, self.label_dict)
+			exit()
+
 		print("clustering starts")
 		print(df.columns)
 		subset_columns = np.append(columns_emb_name, ['position_x', 'position_y','position_z'])
-		objects_df = df[subset_columns] 
+		# subset_columns = deep learning representation
 
-		if self.config['our_method']['analysis']:
-		### do  clustering analysis
-			neighbors = NearestNeighbors(n_neighbors=5)
-			neighbors_fit = neighbors.fit(objects_df)
-			distances, indices = neighbors_fit.kneighbors(objects_df)
-			plt.figure(figsize=(10,6))
-			distances = np.sort(distances, axis=0)
-			distances = distances[:,1]
-			plt.plot(distances)
-			plt.title("Clusters determined by DBSCAN")
-			plt.savefig(f"{self.figs_dir_path}/distances.jpg", bbox_inches='tight')
+		window_size = int(self.config['our_method']['window_size'])
+		window_step = int(self.config['our_method']['window_step'])
+		batch_number = 0
+
+		print(f"window size{window_size}")
+		print(f"window step {window_step}")
+		print(f"number images {len(self.image_names)}")
 		
-		clustering = DBSCAN(eps=3, min_samples=5).fit(objects_df)
-		objects_df.loc[:,'cluster'] = clustering.labels_ 
+		last_image = int(self.config['our_method']['max_images'])
 
-		cluster_dir = Path(self.config['paths']['cluster_dir'])
-		shutil.rmtree(cluster_dir)
-		## reorganize image folder based on clusters
-		for index, row in objects_df.iterrows():
-			cluster_number = int(row["cluster"])
-			if cluster_number != -1:
-				crop_pil = PIL.Image.open(df.iloc[index]["pred_anno_idx"])
-				cluster_dir.mkdir(parents=True, exist_ok=True)
-				Path(self.config['paths']['cluster_dir']+"/"+ str(cluster_number)).mkdir(parents=True, exist_ok=True)
-				filename = df.iloc[index]["pred_anno_idx"].split("/")[-1]
-				crop_pil.save(self.config['paths']['cluster_dir'] + "/" + str(cluster_number)+ "/" + filename)
+		for window_end_idx in range(window_size, last_image, window_step):
+			objects_df = df.loc[df['image_name'].isin(self.image_names[window_end_idx-window_size:window_end_idx])]
+			objects_df = objects_df[subset_columns]
+			if self.config['our_method'].getboolean('analysis'):
+			### do  clustering analysis
+				neighbors = NearestNeighbors(n_neighbors=5)
+				neighbors_fit = neighbors.fit(objects_df)
+				distances, indices = neighbors_fit.kneighbors(objects_df)
+				plt.figure(figsize=(10,6))
+				distances = np.sort(distances, axis=0)
+				distances = distances[:,1]
+				plt.plot(distances)
+				plt.title("Clusters determined by DBSCAN")
+				plt.savefig(f"{self.figs_dir_path}/batch_{batch_number}/distances.jpg", bbox_inches='tight')
+			
+			clustering = DBSCAN(eps=3, min_samples=5).fit(objects_df) # these are the parameters. add a parameter search boolean 2 call clustering over multiple configs
+		# vary min samples from 1-10. use the distance plot to see what epsilon should be
+			objects_df.loc[:,'cluster'] = clustering.labels_ 
 
+			cluster_dir = Path(os.path.join(self.config['paths']['cluster_dir'], f"batch_{batch_number}"))
+			 
+			# shutil.rmtree(cluster_dir)
 
-		cluster_count_df = objects_df.cluster.value_counts().to_frame()
-		if self.config["cache"].getboolean("images"):
-			print(df["image_index"].dtypes)
-			df.to_csv(f"{self.cache_path}_embeddings.csv")
-			cluster_count_df.to_csv(f"{self.cache_path}_cluster.csv")
-		X_embedded = TSNE(n_components=2, perplexity = 3).fit_transform(objects_df)
-		objects_df["x_component"]=X_embedded[:,0]
-		objects_df["y_component"]=X_embedded[:,1]
-		objects_df["image_index"] = df["image_index"]
-		objects_df["pred_anno_idx"] = df["pred_anno_idx"]
-		objects_df["ground_truth_anno_idx"] = df["ground_truth_anno_idx"]
-		
+			## reorganize image folder based on clusters
+			for index, row in objects_df.iterrows():
+				cluster_number = int(row["cluster"])
+				if cluster_number != -1:
+					crop_pil = PIL.Image.open(df.iloc[index]["pred_anno_idx"])
+					cluster_dir.mkdir(parents=True, exist_ok=True)
+					Path(os.path.join(cluster_dir, str(cluster_number))).mkdir(parents=True, exist_ok=True)
+					filename = df.iloc[index]["pred_anno_idx"].split("/")[-1]
+					# crop_pil.save(cluster_dir + "/" + str(cluster_number)+ "/" + filename)
+					crop_pil.save(os.path.join(cluster_dir, str(cluster_number), filename)) # change this to save for each batch
 
-		fig = px.scatter(objects_df, x="x_component", y="y_component", hover_data=["cluster", "ground_truth_anno_idx"], color = "image_index")
-		fig.update_layout(
-			height=800)
-		fig.write_html(f"{self.figs_dir_path}/clustering.html")
+			cluster_count_df = objects_df.cluster.value_counts().to_frame()
+			if self.config["cache"].getboolean("images"):
+				print(df["image_index"].dtypes)
+				df.to_csv(f"{self.cache_path}_embeddings.csv")
+				cluster_count_df.to_csv(f"{self.cache_path}_cluster.csv") 
 
+				# this saves the cache items in the clusters folder. not ideal but avoids making a thousand csvs in cache?
+				# print(f"batch number: {batch_number}")
+				# df.to_csv(os.path.join(cluster_dir, "embeddings.csv"))
+				# cluster_count_df.to_csv(os.path.join(cluster_dir, "cluster.csv"))
 
-		print("done with storing cache of embedding is done")	
+			# TODO need to make sure that the embeddings are global (for each object)
+
+			X_embedded = TSNE(n_components=2, perplexity = 3).fit_transform(objects_df)
+			objects_df["x_component"]=X_embedded[:,0]
+			objects_df["y_component"]=X_embedded[:,1]
+			objects_df["image_index"] = df["image_index"]
+			objects_df["pred_anno_idx"] = df["pred_anno_idx"]
+			objects_df["ground_truth_anno_idx"] = df["ground_truth_anno_idx"]
+			
+
+			fig = px.scatter(objects_df, x="x_component", y="y_component", hover_data=["cluster", "ground_truth_anno_idx"], color = "image_index")
+			fig.update_layout(
+				height=800)
+			# fig.write_html(f"{self.figs_dir_path}/clustering.html")
+			fig.write_html(os.path.join(cluster_dir, "clustering.html"))
+
+			batch_number += 1
+
+			print("done with storing cache of embedding is done")	
 
 	def compute_text_embeddings(self):
 		self.cache_text_exists = os.path.isfile(f"{self.cache_path}_text")
@@ -695,9 +737,11 @@ class NLMap():
 		groundtruth 3d position (x,y,z,0)
 		groundtruth anno index
 		'''
-		tolerance = .65 # the tolerated difference between the predicted bounding box and the ground truth (for each corner of the bounding box)
+		tolerance = .5 # the tolerated difference between the predicted bounding box and the ground truth (for each corner of the bounding box)
 		
 		# find the corresponding ground truth based on the bounding box
+		best_overlap = 0
+		best_centroid = None
 		if filename in self.ground_truths:
 			for box_centroid in self.ground_truths[filename]:
 				indexs = box_centroid[1]
@@ -706,12 +750,15 @@ class NLMap():
 				cmin = indexs[2]
 				cmax = indexs[3]
 				io_gt = intersect_over_gt({'x1': xmin, 'x2': xmax, 'y1': ymin, 'y2': ymax}, {'x1':cmin, 'x2':cmax, 'y1':rmin, 'y2':rmax})
-				if io_gt > tolerance:
+				if io_gt > best_overlap:
 					print(f'io_gt: {io_gt}')
-					return box_centroid
-			print(f"there are no corresponding ground truths in the dataset at [xmin,xmax,ymin,ymax = {[xmin,xmax,ymin,ymax]} for {filename}")
+					best_centroid = box_centroid
+					best_overlap = io_gt
 		else:
 			print(f"there are no ground truths in the dataset for {filename}")
+		if best_centroid and best_overlap > tolerance:
+			return best_centroid
+		print(f"there are no corresponding ground truths in the dataset at [xmin,xmax,ymin,ymax = {[xmin,xmax,ymin,ymax]} for {filename}")
 		return None, None, None, None
 
 	def get_box(self, filename):
