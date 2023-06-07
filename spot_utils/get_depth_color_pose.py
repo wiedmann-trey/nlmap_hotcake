@@ -33,11 +33,11 @@ def main(argv):
     if options.manual_images == "True":
         manual_images = True
     else:
-        already_took_photo = False
+        #already_took_photo = False
         manual_images = False
         robot_is_moving = False
         robot_take_pic = True
-        last_robot_position = [0,0,0]
+        #last_robot_position = [0,0,0]
 
 
     visualize = False #everytime we capture image, vis the results
@@ -90,7 +90,7 @@ def main(argv):
 
             robot_position = [vision_tform_hand.position.x,vision_tform_hand.position.y,vision_tform_hand.position.z]
 
-        if not manual_images:
+        '''if not manual_images:
             if np.linalg.norm(np.array(robot_position) - np.array(last_robot_position)) > 0.2: #robot is moving around
                 print("Robot is moving, no photos!")
                 last_robot_position = robot_position
@@ -104,6 +104,7 @@ def main(argv):
                 else:
                     print("Robot still: NEW PHOTO!")
                     already_took_photo = True #going to take photo, don't next time
+        '''
 
 
 
