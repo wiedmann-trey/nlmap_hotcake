@@ -86,7 +86,7 @@ class LearnRepresentation(nn.Module):
             x = self.classify(x)
         return x
     
-def train_learned_representation(data, label_dict, n_epochs=10, batch_size=32, cache_path='cache/'):
+def train_learned_representation(data, label_dict, n_epochs=50, batch_size=32, cache_path='cache/'):
     vild_embeddings = torch.Tensor(data["vild"])
     _3d_positions = torch.Tensor(data["position"])
 

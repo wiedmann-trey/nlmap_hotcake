@@ -68,7 +68,7 @@ from helpers import intersect_over_gt, train_learned_representation
 FEAT_SIZE = 512
 
 class NLMap():
-	def __init__(self,config_path="./configs/example.ini"):
+	def __init__(self,config_path="./configs/example.ini", tol=None, bb_num=None):
 		###########################################################################################################
 		######### Initialization
 
@@ -78,6 +78,11 @@ class NLMap():
 		self.config = configparser.ConfigParser()
 		self.config.sections()
 		self.config.read(config_path)
+
+		if tol:
+			self.config.set('our_method','bbox_overlap_thresh',str(tol))
+		if bb_num:
+			self.config.set('vild','max_boxes_to_draw',str(bb_num))
 
 		### device setting
 		device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -422,8 +427,8 @@ class NLMap():
 						# embeddings
 
 						df.loc[len(df.index)] = embedding
-					print("EMBEDDING", embedding, crop_fname)
-					print("=================")
+					#print("EMBEDDING", embedding, crop_fname)
+					#print("=================")
 					# TODO: fig_size_w and h are a little hardcoded, make more general?
 					
 				
@@ -484,7 +489,7 @@ class NLMap():
 
 		gt_detection_df.to_csv(f"{self.cache_path}_gt_detections.csv")
 
-		with open(f'{self.cache_path}_gt_stats.txt', 'w') as f:
+		with open(f'cache/gt_stats.txt', 'w') as f:
 			f.write(f'Total Ground Truth Count: {total_gt_count}, Total Undetected: {detection_count}, Total Detected: {total_gt_count-detection_count}, Percent Detected: {(total_gt_count-detection_count)/float(total_gt_count)}')
 
 		if self.config['our_method'].getboolean('learn_representation'):
@@ -505,70 +510,70 @@ class NLMap():
 		print(f"number images {len(self.image_names)}")
 		
 		last_image = int(self.config['our_method']['max_images'])
+		if self.config['our_method'].getboolean('clustering'):
+			for window_end_idx in range(window_size, last_image, window_step):
+				objects_df = df.loc[df['image_name'].isin(self.image_names[window_end_idx-window_size:window_end_idx])]
+				objects_df = objects_df[subset_columns]
+				if self.config['our_method'].getboolean('analysis'):
+				### do  clustering analysis
+					neighbors = NearestNeighbors(n_neighbors=5)
+					neighbors_fit = neighbors.fit(objects_df)
+					distances, indices = neighbors_fit.kneighbors(objects_df)
+					plt.figure(figsize=(10,6))
+					distances = np.sort(distances, axis=0)
+					distances = distances[:,1]
+					plt.plot(distances)
+					plt.title("Clusters determined by DBSCAN")
+					plt.savefig(f"{self.figs_dir_path}/batch_{batch_number}/distances.jpg", bbox_inches='tight')
+				
+				clustering = DBSCAN(eps=3, min_samples=5).fit(objects_df) # these are the parameters. add a parameter search boolean 2 call clustering over multiple configs
+			# vary min samples from 1-10. use the distance plot to see what epsilon should be
+				objects_df.loc[:,'cluster'] = clustering.labels_ 
 
-		for window_end_idx in range(window_size, last_image, window_step):
-			objects_df = df.loc[df['image_name'].isin(self.image_names[window_end_idx-window_size:window_end_idx])]
-			objects_df = objects_df[subset_columns]
-			if self.config['our_method'].getboolean('analysis'):
-			### do  clustering analysis
-				neighbors = NearestNeighbors(n_neighbors=5)
-				neighbors_fit = neighbors.fit(objects_df)
-				distances, indices = neighbors_fit.kneighbors(objects_df)
-				plt.figure(figsize=(10,6))
-				distances = np.sort(distances, axis=0)
-				distances = distances[:,1]
-				plt.plot(distances)
-				plt.title("Clusters determined by DBSCAN")
-				plt.savefig(f"{self.figs_dir_path}/batch_{batch_number}/distances.jpg", bbox_inches='tight')
-			
-			clustering = DBSCAN(eps=3, min_samples=5).fit(objects_df) # these are the parameters. add a parameter search boolean 2 call clustering over multiple configs
-		# vary min samples from 1-10. use the distance plot to see what epsilon should be
-			objects_df.loc[:,'cluster'] = clustering.labels_ 
+				cluster_dir = Path(os.path.join(self.config['paths']['cluster_dir'], f"batch_{batch_number}"))
+				
+				# shutil.rmtree(cluster_dir)
 
-			cluster_dir = Path(os.path.join(self.config['paths']['cluster_dir'], f"batch_{batch_number}"))
-			 
-			# shutil.rmtree(cluster_dir)
+				## reorganize image folder based on clusters
+				for index, row in objects_df.iterrows():
+					cluster_number = int(row["cluster"])
+					if cluster_number != -1:
+						crop_pil = PIL.Image.open(df.iloc[index]["pred_anno_idx"])
+						cluster_dir.mkdir(parents=True, exist_ok=True)
+						Path(os.path.join(cluster_dir, str(cluster_number))).mkdir(parents=True, exist_ok=True)
+						filename = df.iloc[index]["pred_anno_idx"].split("/")[-1]
+						# crop_pil.save(cluster_dir + "/" + str(cluster_number)+ "/" + filename)
+						crop_pil.save(os.path.join(cluster_dir, str(cluster_number), filename)) # change this to save for each batch
 
-			## reorganize image folder based on clusters
-			for index, row in objects_df.iterrows():
-				cluster_number = int(row["cluster"])
-				if cluster_number != -1:
-					crop_pil = PIL.Image.open(df.iloc[index]["pred_anno_idx"])
-					cluster_dir.mkdir(parents=True, exist_ok=True)
-					Path(os.path.join(cluster_dir, str(cluster_number))).mkdir(parents=True, exist_ok=True)
-					filename = df.iloc[index]["pred_anno_idx"].split("/")[-1]
-					# crop_pil.save(cluster_dir + "/" + str(cluster_number)+ "/" + filename)
-					crop_pil.save(os.path.join(cluster_dir, str(cluster_number), filename)) # change this to save for each batch
-
-			cluster_count_df = objects_df.cluster.value_counts().to_frame()
-			if self.config["cache"].getboolean("images"):
-				print(df["image_index"].dtypes)
-				df.to_csv(f"{self.cache_path}_embeddings.csv")
+				cluster_count_df = objects_df.cluster.value_counts().to_frame()
 				cluster_count_df.to_csv(f"{self.cache_path}_cluster.csv") 
 
-				# this saves the cache items in the clusters folder. not ideal but avoids making a thousand csvs in cache?
-				# print(f"batch number: {batch_number}")
-				# df.to_csv(os.path.join(cluster_dir, "embeddings.csv"))
-				# cluster_count_df.to_csv(os.path.join(cluster_dir, "cluster.csv"))
+					# this saves the cache items in the clusters folder. not ideal but avoids making a thousand csvs in cache?
+					# print(f"batch number: {batch_number}")
+					# df.to_csv(os.path.join(cluster_dir, "embeddings.csv"))
+					# cluster_count_df.to_csv(os.path.join(cluster_dir, "cluster.csv"))
 
-			# TODO need to make sure that the embeddings are global (for each object)
+				# TODO need to make sure that the embeddings are global (for each object)
 
-			X_embedded = TSNE(n_components=2, perplexity = 3).fit_transform(objects_df)
-			objects_df["x_component"]=X_embedded[:,0]
-			objects_df["y_component"]=X_embedded[:,1]
-			objects_df["image_index"] = df["image_index"]
-			objects_df["pred_anno_idx"] = df["pred_anno_idx"]
-			objects_df["ground_truth_anno_idx"] = df["ground_truth_anno_idx"]
-			
+				X_embedded = TSNE(n_components=2, perplexity = 3).fit_transform(objects_df)
+				objects_df["x_component"]=X_embedded[:,0]
+				objects_df["y_component"]=X_embedded[:,1]
+				objects_df["image_index"] = df["image_index"]
+				objects_df["pred_anno_idx"] = df["pred_anno_idx"]
+				objects_df["ground_truth_anno_idx"] = df["ground_truth_anno_idx"]
+				
 
-			fig = px.scatter(objects_df, x="x_component", y="y_component", hover_data=["cluster", "ground_truth_anno_idx"], color = "image_index")
-			fig.update_layout(
-				height=800)
-			# fig.write_html(f"{self.figs_dir_path}/clustering.html")
-			fig.write_html(os.path.join(cluster_dir, "clustering.html"))
+				fig = px.scatter(objects_df, x="x_component", y="y_component", hover_data=["cluster", "ground_truth_anno_idx"], color = "image_index")
+				fig.update_layout(
+					height=800)
+				# fig.write_html(f"{self.figs_dir_path}/clustering.html")
+				fig.write_html(os.path.join(cluster_dir, "clustering.html"))
 
-			batch_number += 1
+				batch_number += 1
 
+		if self.config["cache"].getboolean("images"):
+			print(df["image_index"].dtypes)
+			df.to_csv(f"{self.cache_path}_embeddings.csv")
 			print("done with storing cache of embedding is done")	
 
 	def compute_text_embeddings(self):
@@ -737,8 +742,7 @@ class NLMap():
 		groundtruth 3d position (x,y,z,0)
 		groundtruth anno index
 		'''
-		tolerance = int(self.config['our_method']['bbox_overlap_thresh']) # the tolerated difference between the predicted bounding box and the ground truth (for each corner of the bounding box)
-		
+		tolerance = float(self.config['our_method']['bbox_overlap_thresh']) # the tolerated difference between the predicted bounding box and the ground truth (for each corner of the bounding box)
 		# find the corresponding ground truth based on the bounding box
 		best_overlap = 0
 		best_centroid = None
@@ -751,14 +755,15 @@ class NLMap():
 				cmax = indexs[3]
 				io_gt = intersect_over_gt({'x1': xmin, 'x2': xmax, 'y1': ymin, 'y2': ymax}, {'x1':cmin, 'x2':cmax, 'y1':rmin, 'y2':rmax})
 				if io_gt > best_overlap:
-					print(f'io_gt: {io_gt}')
+					#print(f'io_gt: {io_gt}')
 					best_centroid = box_centroid
 					best_overlap = io_gt
 		else:
-			print(f"there are no ground truths in the dataset for {filename}")
+			pass
+			#print(f"there are no ground truths in the dataset for {filename}")
 		if best_centroid and best_overlap > tolerance:
 			return best_centroid
-		print(f"there are no corresponding ground truths in the dataset at [xmin,xmax,ymin,ymax = {[xmin,xmax,ymin,ymax]} for {filename}")
+		#print(f"there are no corresponding ground truths in the dataset at [xmin,xmax,ymin,ymax = {[xmin,xmax,ymin,ymax]} for {filename}")
 		return None, None, None, None
 
 	def get_box(self, filename):
@@ -855,9 +860,13 @@ if __name__ == "__main__":
 	startTime = time.time()
 	parser = argparse.ArgumentParser()
 	parser.add_argument("-c","--config_path", help="Path to config file", type=str, default="./configs/example.ini")
+	
+	# added args to override configs to help with setting hyperparameters
+	parser.add_argument("-t","--tol", help="GT threshold/tolerance", type=float, default=None)
+	parser.add_argument("-n","--bbnum", help="Max number of bounding boxes", type=int, default=None)
 	args = parser.parse_args()
 
-	nlmap = NLMap(args.config_path)
+	nlmap = NLMap(args.config_path, tol=args.tol, bb_num=args.bbnum)
 
 	executionTime = (time.time() - startTime)
 	print(f"Execution time: {executionTime} seconds")
