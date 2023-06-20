@@ -63,7 +63,7 @@ from pathlib import Path
 import PIL.Image
 import shutil
 
-from helpers import intersect_over_gt, train_learned_representation
+from helpers import intersect_over_union, train_learned_representation
 
 FEAT_SIZE = 512
 
@@ -214,7 +214,7 @@ class NLMap():
 
 
 
-		columns = ['position_x', 'position_y','position_z', 'position_?', "bounding_box_y1","bounding_box_x1",  "bounding_box_y2","bounding_box_x2", "image_name", 'image_index',"pred_anno_idx", 'ground_truth_label_name', 'ground_truth_anno_idx', "ground_truth_bounding_box_y1","ground_truth_bounding_box_x1",  "ground_truth_bounding_box_y2","ground_truth_bounding_box_x2"]
+		columns = ["ground_truth_overlap", 'position_x', 'position_y','position_z', 'position_?', "bounding_box_y1","bounding_box_x1",  "bounding_box_y2","bounding_box_x2", "image_name", 'image_index',"pred_anno_idx", 'ground_truth_label_name', 'ground_truth_anno_idx', "ground_truth_bounding_box_y1","ground_truth_bounding_box_x1",  "ground_truth_bounding_box_y2","ground_truth_bounding_box_x2"]
 		columns_emb_name = [f"vild_embedding_{i}" for i in range(FEAT_SIZE)]
 		columns = np.append(columns, columns_emb_name)
 		
@@ -384,54 +384,62 @@ class NLMap():
 							self.priority_queue_vild_dir[category_name].put(new_item) #TODO: make this an object to more interpretable
 
 						self.save_anno_boxes(image_name,anno_idx, scores, raw_image, segmentations, rpn_score, crop, x1,x2,y1,y2)
-					gt_name = None
-					r1, r2, c1, c2 = None, None, None, None
-					gt_idx = None
-					# 	# TODO 3d_position does not get initialized if there are no ground truths associated with that image.
-					if self.config["our_method"].getboolean("use_our_method"): # huda edit
-						# 3d_position does not get initialized if there are no ground truths associated with that image.
-						gt_name, gt_bb, _3d_poisiton, gt_idx = self.extract_pose_from_xml(image_name, x1,x2,y1,y2)
-						if gt_bb:
-							r1, r2, c1, c2 = gt_bb 
-					else:
-						_3d_poisiton = self.extract_3d_position(image_name, x1,x2,y1,y2)
+				
+				if image_name not in self.detected_ground_truths:
+						self.detected_ground_truths[image_name] = set()
 
-					if image_name not in self.detected_ground_truths:
-							self.detected_ground_truths[image_name] = set()
 
-					embedding = None
-					# embedding = [1] * 512
-					#_3d_poisiton = [1,2,3] ##fixed the position to check the flow for the merge
-					if _3d_poisiton != None:
-						embedding = np.append(_3d_poisiton, [y1, x1, y2, x2 ])
-						embedding = np.append(embedding, [image_name])
-						embedding = np.append(embedding, [img_index])
-						embedding = np.append(embedding, [crop_fname])
-						embedding = np.append(embedding, [gt_name])
-						embedding = np.append(embedding, [gt_idx])
-						embedding = np.append(embedding, [r1, c1, r2, c2])
-						embedding = np.append(embedding, detection_visual_feat[anno_idx])
-						if gt_idx != None:
+				if self.config["our_method"].getboolean("use_our_method"):
+					# keep track of crops already assigned a ground truth
+					assigned_crops = set()
+
+					# loop through all ground truths in the image
+					for (gt_name, gt_bb, _3d_poisiton, gt_idx) in self.ground_truths[image_name]:
+						r1, r2, c1, c2 = gt_bb 
+						best_overlap = float(self.config['our_method']['bbox_overlap_thresh']) 
+						best_embedding = None
+						best_crop_idx = None
+
+						# loop through all detected crops in the image
+						for anno_idx in indices[0:int(n_boxes)]:
+							if anno_idx in assigned_crops:
+								continue
+
+							crop_fname = f"{self.cache_path}_{self.config['dir_names']['data']}_{image_name}_crop_{anno_idx}.jpeg"
+
+							bbox = rescaled_detection_boxes[anno_idx]
+							y1, x1, y2, x2 = int(np.floor(bbox[0])), int(np.floor(bbox[1])), int(np.ceil(bbox[2])), int(np.ceil(bbox[3]))
+							
+							# calculate overlap between the ground truth and detection
+							gt_overlap = intersect_over_union({'x1': x1, 'x2': x2, 'y1': y1, 'y2': y2}, {'x1':c1, 'x2':c2, 'y1':r1, 'y2':r2})
+
+							if gt_overlap > best_overlap:
+								embedding = np.append([gt_overlap], _3d_poisiton)
+								embedding = np.append(embedding, [y1, x1, y2, x2 ])
+								embedding = np.append(embedding, [image_name])
+								embedding = np.append(embedding, [img_index])
+								embedding = np.append(embedding, [crop_fname])
+								embedding = np.append(embedding, [gt_name])
+								embedding = np.append(embedding, [gt_idx])
+								embedding = np.append(embedding, [r1, c1, r2, c2])
+								embedding = np.append(embedding, detection_visual_feat[anno_idx])
+
+								best_embedding = embedding
+								best_overlap = gt_overlap
+								best_crop_idx = anno_idx
+
+						# assign the best crop to the ground truth and add to df
+						if best_crop_idx:
+							df.loc[len(df.index)] = best_embedding
+							assigned_crops.add(best_crop_idx)
 							self.detected_ground_truths[image_name].add(gt_idx)
-							self.learning_data["vild"].append(detection_visual_feat[anno_idx])
-							self.learning_data["position"].append(_3d_poisiton[:-1])
-							self.learning_data["label"].append(gt_name)
-						
-						## order of the columns
-						# ['position_x', 'position_y','position_z', 'position_?', 
-						# "bounding_box_y1","bounding_box_x1",  "bounding_box_y2",
-						# "bounding_box_x2",'image_index',"pred_anno_idx", 
-						# 'ground_truth_label_name', 'ground_truth_anno_idx', 
-						# "ground_truth_bounding_box_y1","ground_truth_bounding_box_x1",
-						#   "ground_truth_bounding_box_y2","ground_truth_bounding_box_x2"]
-						# embeddings
+							self.learning_data["vild"].append(detection_visual_feat[best_crop_idx])
+							self.learning_data["position"].append(best_embedding[1:4])
+							self.learning_data["label"].append(best_embedding[12])
 
-						df.loc[len(df.index)] = embedding
-					#print("EMBEDDING", embedding, crop_fname)
-					#print("=================")
 					# TODO: fig_size_w and h are a little hardcoded, make more general?
 					
-				
+					
 			if self.config["cache"].getboolean("images"):
 				pickle.dump(self.image2vectorvild_dir,open(f"{self.cache_path}_images_vild","wb"))
 				pickle.dump(self.image2vectorclip_dir,open(f"{self.cache_path}_images_clip","wb"))
@@ -762,9 +770,9 @@ class NLMap():
 			pass
 			#print(f"there are no ground truths in the dataset for {filename}")
 		if best_centroid and best_overlap > tolerance:
-			return best_centroid
+			return best_centroid, best_overlap
 		#print(f"there are no corresponding ground truths in the dataset at [xmin,xmax,ymin,ymax = {[xmin,xmax,ymin,ymax]} for {filename}")
-		return None, None, None, None
+		return (None, None, None, None), None
 
 	def get_box(self, filename):
 		path = os.path.join("/home/ifrah/longterm_semantic_map/combined_moving_static_KTH", filename)

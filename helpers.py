@@ -4,7 +4,7 @@ import torchmetrics
 import matplotlib.pyplot as plt
 from sklearn import preprocessing
 
-def intersect_over_gt(bb, gt):
+def intersect_over_union(bb, gt):
     """
     Calculate the fraction of groundtruth bounding box that is
     covered by the bounding box
@@ -54,7 +54,7 @@ def intersect_over_gt(bb, gt):
     # compute the intersection over union by taking the intersection
     # area and dividing it by the sum of prediction + ground-truth
     # areas - the interesection area
-    io_gt = intersection_area / float(gt_area)
+    io_gt = intersection_area / float(bb_area + gt_area - intersection_area)
     #print("Bounding box")
     #print(bb)
     #print("Ground truth")
@@ -87,13 +87,13 @@ class LearnRepresentation(nn.Module):
         return x
     
 def train_learned_representation(data, label_dict, n_epochs=50, batch_size=32, cache_path='cache/'):
-    vild_embeddings = torch.Tensor(data["vild"])
-    _3d_positions = torch.Tensor(data["position"])
+    vild_embeddings = torch.Tensor(data["vild"][0:250])
+    _3d_positions = torch.Tensor(data["position"][0:250])
 
     embeddings = torch.cat([vild_embeddings, _3d_positions], dim=1)
 
     le = preprocessing.LabelEncoder()
-    labels = torch.Tensor(le.fit_transform(data["label"])).long()
+    labels = torch.Tensor(le.fit_transform(data["label"][0:250])).long()
     class_n = len(le.classes_)
     print(le.classes_)
 
