@@ -11,6 +11,7 @@ import clip
 import torch
 import time
 import copy
+import csv
 
 from nlmap_utils import get_best_clip_vild_dirs
 from spot_utils.utils import pixel_to_vision_frame, pixel_to_vision_frame_depth_provided, arm_object_grasp, open_gripper
@@ -67,6 +68,10 @@ from helpers import intersect_over_union, train_learned_representation
 
 FEAT_SIZE = 512
 
+from sklearn.metrics import rand_score, adjusted_rand_score
+from sklearn import preprocessing
+
+
 class NLMap():
 	def __init__(self,config_path="./configs/example.ini", tol=None, bb_num=None):
 		###########################################################################################################
@@ -86,6 +91,16 @@ class NLMap():
 
 		### device setting
 		device = "cuda" if torch.cuda.is_available() else "cpu"
+
+		## TODO put these lines in a better place or delete before merging
+		# shutil.rmtree(f"{self.config['paths']['cache_dir']}")
+		shutil.rmtree(f"{self.config['paths']['figs_dir']}")
+		shutil.rmtree(f"{self.config['paths']['cluster_dir']}")
+		
+		# os.mkdir(f"{self.config['paths']['cache_dir']}")
+		os.mkdir(f"{self.config['paths']['figs_dir']}")
+		os.mkdir(f"{self.config['paths']['cluster_dir']}")
+		# os.mkdir(f"{self.config['paths']['cache_dir']}")
 
 		### CLIP models set to none by default
 		self.clip_model = None
@@ -161,7 +176,6 @@ class NLMap():
 		### Load cached image embeddings if they exist and are to be used, or make them otherwise
 		self.cache_image_exists = os.path.isfile(f"{self.config['paths']['cache_dir']}/{self.config['dir_names']['data']}_images_vild")
 
-		## huda TODO populate the ground truth dictionary (class variable)
 		self.ground_truths = {}
 		self.object_image_list = {}
 		self.detected_ground_truths = {}
@@ -170,6 +184,9 @@ class NLMap():
 		self.learning_data["position"] = []
 		self.learning_data["label"] = []
 		self.label_dict = {}
+		self.index_per_batch = []
+		self.labels_to_ints = {} # the keys are the ground truth text labels, and the values are the numbers assigned to each using label_encoder
+		
         # dictionary from image name to a list of tuples containing the ground truth label, bounding box coordinates, and centroid of object
         # the the extract pose function uses this dictionary to find a matching image name and a matching bbox for the inputs. If it matches, return the centroid
 
@@ -221,6 +238,7 @@ class NLMap():
 		if self.config["cache"].getboolean("images") and self.cache_image_exists: #if image cache should be used and it exists, load it in
 			self.image2vectorvild_dir = pickle.load(open(f"{self.cache_path}_images_vild","rb"))
 			self.image2vectorclip_dir = pickle.load(open(f"{self.cache_path}_images_clip","rb"))
+			#TODO the csvs need to be changed to account for batchifying
 			df = pd.read_csv(f"{self.cache_path}_embeddings.csv",  dtype={'image_index': 'object'}, index_col=0)
 			cluster_count_df = pd.read_csv(f"{self.cache_path}_cluster.csv", index_col=0)
 
@@ -303,18 +321,21 @@ class NLMap():
 						print('ViLD does not detect anything belong to the given category')
 
 					else:
-						image_with_detections = visualize_boxes_and_labels_on_image_array(
-							np.array(image),
-							rescaled_detection_boxes[indices],
-							valid_indices[:self.config["vild"].getint("max_boxes_to_draw")][indices],
-							detection_roi_scores[indices],
-							self.category_indices,
-							instance_masks=segmentations[indices],
-							use_normalized_coordinates=False,
-							max_boxes_to_draw=self.config["vild"].getint("max_boxes_to_draw"),
-							min_score_thresh=self.config["vild"].getfloat("min_rpn_score_thresh"),
-							skip_scores=False,
-							skip_labels=True)
+						try:
+							image_with_detections = visualize_boxes_and_labels_on_image_array(
+								np.array(image),
+								rescaled_detection_boxes[indices],
+								valid_indices[:self.config["vild"].getint("max_boxes_to_draw")][indices],
+								detection_roi_scores[indices],
+								self.category_indices,
+								instance_masks=segmentations[indices],
+								use_normalized_coordinates=False,
+								max_boxes_to_draw=self.config["vild"].getint("max_boxes_to_draw"),
+								min_score_thresh=self.config["vild"].getfloat("min_rpn_score_thresh"),
+								skip_scores=False,
+								skip_labels=True)
+						except:
+							print(f"image erroring: {image_name}")
 
 
 					plt.figure(figsize=overall_fig_size)
@@ -322,7 +343,7 @@ class NLMap():
 					plt.axis('off')
 					plt.title('Detected objects and RPN scores')
 					if self.config["viz"].getboolean("save_whole_boxes"):
-						plt.savefig(f"{self.figs_dir_path}/{image_name}_whole.jpg", bbox_inches='tight')
+						plt.savefig(f"{self.figs_dir_path}/{image_name}_whole.jpg".removeprefix(f"{self.config['dir_names']['data']}_{self.config['dir_names']['data']}"), bbox_inches='tight')
 					if self.config["viz"].getboolean("boxes"):
 						plt.show()
 					plt.close()
@@ -355,6 +376,13 @@ class NLMap():
 					#if (use cache and cache does not exist) or (cache image does not exist), process the data
 					if ((self.config["cache"].getboolean("images") and not self.cache_image_exists) or (not self.cache_image_exists)):
 						crop_fname = f"{self.cache_path}_{self.config['dir_names']['data']}_{image_name}_crop_{anno_idx}.jpeg"
+						print(f"original name: {crop_fname}")
+						# making the crop names not super long
+						# if self.config["our_method"].getboolean("KTH_dataset"):
+						# 	crop_fname = crop_fname.replace(f'{str(self.config["dir_names"]["data"])}_', '')
+				
+						# combined_moving_static_KTH_combined_moving_static_KTH_20140820_patrol_run_2_room_1_rgb_0008.jpg_crop_3
+
 						crop_pil.save(crop_fname)
 						crop_back = Image.open(crop_fname)
 						if self.config["our_method"].getboolean("use_clip"):
@@ -466,48 +494,68 @@ class NLMap():
 					pickle.dump(self.topk_vild_dir,open(f"{self.cache_path}_topk_vild","wb"))
 					pickle.dump(self.topk_clip_dir,open(f"{self.cache_path}_topk_clip","wb"))
 
+		label_encoder = preprocessing.LabelEncoder() 
+		gt_labels = list(self.label_dict.keys())
+		labels = label_encoder.fit(gt_labels)
+		labels = label_encoder.transform(gt_labels)
+		print(f"labels are: {labels}")
+		# populating the dictionary where the keys are the ground truth text labels, and the values are the numbers assigned to each using label_encoder
+		i = 0
+		for gt in gt_labels:
+			self.labels_to_ints[gt] = labels[i]
+			i += 1
+
 		gt_detection_df = pd.DataFrame(columns=["Image Path", "Ground Truth Labels", "Detected Labels", "Undetected Labels", "Number Undetected"], index=self.detected_ground_truths.keys())
 
 		# ground truth detection stats
-		gt_detection_stats = {}
-		detection_count = 0
-		for file in self.detected_ground_truths.keys():
-			gt = self.ground_truths[file]
-			gt_detection_stats[file] = set(range(len(gt)))
-			detection_count += len(gt_detection_stats[file])
+		# gt_detection_stats = {}
+		# detection_count = 0
+		# for file in self.detected_ground_truths.keys():
+		# 	gt = self.ground_truths[file]
+		# 	gt_detection_stats[file] = set(range(len(gt)))
+		# 	detection_count += len(gt_detection_stats[file])
 
-		total_gt_count = detection_count
-		gt_detection_df["Ground Truth Labels"] = pd.Series(copy.deepcopy(gt_detection_stats))
+		# total_gt_count = detection_count
+		# gt_detection_df["Ground Truth Labels"] = pd.Series(copy.deepcopy(gt_detection_stats))
 
-		print(f'total ground truth count: {detection_count}')
+		# print(f'total ground truth count: {detection_count}')
 
-		for file, detections in self.detected_ground_truths.items():
-			for detection in detections:
-				if detection in gt_detection_stats[file]:
-					gt_detection_stats[file].remove(detection)
-					detection_count -= 1
+		# for file, detections in self.detected_ground_truths.items():
+		# 	for detection in detections:
+		# 		if detection in gt_detection_stats[file]:
+		# 			gt_detection_stats[file].remove(detection)
+		# 			detection_count -= 1
 
-		gt_detection_df["Detected Labels"] = pd.Series(self.detected_ground_truths)
-		gt_detection_df["Undetected Labels"] = pd.Series(gt_detection_stats)
+		# gt_detection_df["Detected Labels"] = pd.Series(self.detected_ground_truths)
+		# gt_detection_df["Undetected Labels"] = pd.Series(gt_detection_stats)
 
-		print(f'undetected ground truths: {detection_count}')
-		print(gt_detection_stats)
-		print(gt_detection_df)
-		gt_detection_df["Number Undetected"] = gt_detection_df["Undetected Labels"].str.len()
+		# print(f'undetected ground truths: {detection_count}')
+		# print(gt_detection_stats)
+		# print(gt_detection_df)
+		# gt_detection_df["Number Undetected"] = gt_detection_df["Undetected Labels"].str.len()
 
-		gt_detection_df.to_csv(f"{self.cache_path}_gt_detections.csv")
+		# gt_detection_df.to_csv(f"{self.cache_path}_gt_detections.csv")
 
-		with open(f'cache/gt_stats.txt', 'w') as f:
-			f.write(f'Total Ground Truth Count: {total_gt_count}, Total Undetected: {detection_count}, Total Detected: {total_gt_count-detection_count}, Percent Detected: {(total_gt_count-detection_count)/float(total_gt_count)}')
+		# with open(f'cache/gt_stats.txt', 'w') as f:
+		# 	f.write(f'Total Ground Truth Count: {total_gt_count}, Total Undetected: {detection_count}, Total Detected: {total_gt_count-detection_count}, Percent Detected: {(total_gt_count-detection_count)/float(total_gt_count)}')
 
 		if self.config['our_method'].getboolean('learn_representation'):
 			train_learned_representation(self.learning_data, self.label_dict)
 			exit()
 
+		if self.config["cache"].getboolean("images"):
+			print(df["image_index"].dtypes)
+			df.to_csv(f"{self.cache_path}_embeddings.csv")
+			print("done with storing cache of embedding is done")	
+			
 		print("clustering starts")
 		print(df.columns)
-		subset_columns = np.append(columns_emb_name, ['position_x', 'position_y','position_z'])
-		# subset_columns = deep learning representation
+		if self.config["embedding_type"].getboolean("only_pose"):
+			subset_columns = np.append(columns_emb_name, ['position_x', 'position_y','position_z'])
+		elif self.config["embedding_type"].getboolean("vild_and_pose"):
+			subset_columns = ['position_x', 'position_y','position_z']
+		elif self.config["embedding_type"].getboolean("learned"):
+			pass # TODO what to make this. what is subset columns
 
 		window_size = int(self.config['our_method']['window_size'])
 		window_step = int(self.config['our_method']['window_step'])
@@ -518,43 +566,59 @@ class NLMap():
 		print(f"number images {len(self.image_names)}")
 		
 		last_image = int(self.config['our_method']['max_images'])
-		if self.config['our_method'].getboolean('clustering'):
-			for window_end_idx in range(window_size, last_image, window_step):
-				objects_df = df.loc[df['image_name'].isin(self.image_names[window_end_idx-window_size:window_end_idx])]
-				objects_df = objects_df[subset_columns]
-				if self.config['our_method'].getboolean('analysis'):
-				### do  clustering analysis
-					neighbors = NearestNeighbors(n_neighbors=5)
-					neighbors_fit = neighbors.fit(objects_df)
-					distances, indices = neighbors_fit.kneighbors(objects_df)
-					plt.figure(figsize=(10,6))
-					distances = np.sort(distances, axis=0)
-					distances = distances[:,1]
-					plt.plot(distances)
-					plt.title("Clusters determined by DBSCAN")
-					plt.savefig(f"{self.figs_dir_path}/batch_{batch_number}/distances.jpg", bbox_inches='tight')
-				
-				clustering = DBSCAN(eps=3, min_samples=5).fit(objects_df) # these are the parameters. add a parameter search boolean 2 call clustering over multiple configs
-			# vary min samples from 1-10. use the distance plot to see what epsilon should be
-				objects_df.loc[:,'cluster'] = clustering.labels_ 
+		print(df.shape)
+		batch_cluster_count_df = pd.DataFrame() # dataframe with all batches
+		samples = 5
+		epsilon = 0.7
+		for window_end_idx in range(window_size, last_image, window_step):
+			objects_df = df.loc[df['image_name'].isin(self.image_names[window_end_idx-window_size:window_end_idx])]
+			print(df.shape)
+			objects_df = objects_df[subset_columns]
+			if self.config['our_method'].getboolean('analysis'):
+			### do  clustering analysis
+				neighbors = NearestNeighbors(n_neighbors=samples) # same as min samples
+				neighbors_fit = neighbors.fit(objects_df)
+				print(f"objects_df: {objects_df}")
+				distances, indices = neighbors_fit.kneighbors(objects_df) 
+				plt.figure(figsize=(10,6))
+				distances = np.sort(distances, axis=0)
+				distances = distances[:,1]
+				plt.plot(distances) # eps is the y axis
+				plt.title("Clusters determined by DBSCAN")
+				# os.mkdir(os.path.join(self.figs_dir_path, f"batch_{batch_number}"), exist_ok=True)
+				plt.savefig(f"{self.figs_dir_path}/distances_{batch_number}.jpg", bbox_inches='tight')
+			
+			clustering = DBSCAN(eps=epsilon, min_samples=samples).fit(objects_df) # these are the parameters. add a parameter search boolean 2 call clustering over multiple configs
+		# vary min samples from 1-10. use the distance plot to see what epsilon should be
+			objects_df.loc[:,'cluster'] = clustering.labels_
+			print(f"clustering labels: {clustering.labels_ }") 
+			# self.index_per_batch.append(self.cluster_accuracy(clustering.labels_))
+			print(f"cols objects df: {objects_df.columns.tolist()}")
+			gt_labels_input = [self.labels_to_ints[l] for l in df.loc[df['image_name'].isin(self.image_names[window_end_idx-window_size:window_end_idx])]['ground_truth_label_name'].tolist()]
+			self.index_per_batch.append(self.cluster_accuracy(gt_labels_input, clustering.labels_))
 
-				cluster_dir = Path(os.path.join(self.config['paths']['cluster_dir'], f"batch_{batch_number}"))
-				
-				# shutil.rmtree(cluster_dir)
+			cluster_dir = Path(os.path.join(self.config['paths']['cluster_dir'], f"batch_{batch_number}"))
+			 
+			# shutil.rmtree(cluster_dir)
 
-				## reorganize image folder based on clusters
-				for index, row in objects_df.iterrows():
-					cluster_number = int(row["cluster"])
-					if cluster_number != -1:
-						crop_pil = PIL.Image.open(df.iloc[index]["pred_anno_idx"])
-						cluster_dir.mkdir(parents=True, exist_ok=True)
-						Path(os.path.join(cluster_dir, str(cluster_number))).mkdir(parents=True, exist_ok=True)
-						filename = df.iloc[index]["pred_anno_idx"].split("/")[-1]
-						# crop_pil.save(cluster_dir + "/" + str(cluster_number)+ "/" + filename)
-						crop_pil.save(os.path.join(cluster_dir, str(cluster_number), filename)) # change this to save for each batch
+			## reorganize image folder based on clusters
+			for index, row in objects_df.iterrows():
+				cluster_number = int(row["cluster"])
+				# if cluster_number != -1: # removed this to see what counts as noise
+				crop_pil = PIL.Image.open(df.iloc[index]["pred_anno_idx"])
+				cluster_dir.mkdir(parents=True, exist_ok=True)
+				Path(os.path.join(cluster_dir, str(cluster_number))).mkdir(parents=True, exist_ok=True)
+				filename = df.iloc[index]["pred_anno_idx"].split("/")[-1]
+				# crop_pil.save(cluster_dir + "/" + str(cluster_number)+ "/" + filename)
+				crop_pil.save(os.path.join(cluster_dir, str(cluster_number), filename)) 
 
-				cluster_count_df = objects_df.cluster.value_counts().to_frame()
-				cluster_count_df.to_csv(f"{self.cache_path}_cluster.csv") 
+			cluster_count_df = objects_df.cluster.value_counts().to_frame()
+			if self.config["cache"].getboolean("images"):
+				cluster_count_df.to_csv(f"{self.cache_path}_cluster.csv")
+				clusters_list = [pd.DataFrame([batch_number], columns=['Batch number']), cluster_count_df, batch_cluster_count_df]
+				batch_cluster_count_df = pd.concat(clusters_list)
+				print(pd.concat(clusters_list))
+				batch_cluster_count_df.to_csv(f"{self.cache_path}_per_batch_cluster_{samples}_{epsilon}.csv") 
 
 					# this saves the cache items in the clusters folder. not ideal but avoids making a thousand csvs in cache?
 					# print(f"batch number: {batch_number}")
@@ -571,21 +635,51 @@ class NLMap():
 				objects_df["ground_truth_anno_idx"] = df["ground_truth_anno_idx"]
 				
 
-				fig = px.scatter(objects_df, x="x_component", y="y_component", hover_data=["cluster", "ground_truth_anno_idx"], color = "image_index")
-				fig.update_layout(
-					height=800)
-				# fig.write_html(f"{self.figs_dir_path}/clustering.html")
-				fig.write_html(os.path.join(cluster_dir, "clustering.html"))
+			fig = px.scatter(objects_df, x="x_component", y="y_component", hover_data=["cluster", "ground_truth_anno_idx"], color = "image_index")
+			fig.update_layout(
+				height=800)
+			# fig.write_html(f"{self.figs_dir_path}/clustering.html")
+			print(f"objects df {objects_df}")
+			if os.path.isdir(cluster_dir):
+				fig.write_html(os.path.join(cluster_dir, f"clustering{batch_number}.html"))
 
 				batch_number += 1
 
+		field_names = ["embedding type", "epsilon", "min samples", "average regular index_per_batch", "average adjusted index_per_batch", "# of images", "regular index_per_batch", "adjusted index_per_batch"]
+		RI = [float(elem[0]) for elem in self.index_per_batch]
+		ARI = [float(elem[1]) for elem in self.index_per_batch]
+
+		 
+
+		if self.config["embedding_type"].getboolean("only_pose"):
+			embedding_type = "pose"
+		elif self.config["embedding_type"].getboolean("vild_and_pose"):
+			embedding_type = "vild_and_pose"
+		elif self.config["embedding_type"].getboolean("learned"):
+			embedding_type = "learned"
+			
+		results_dict = {"embedding type": embedding_type, "epsilon": epsilon, "min samples": samples, "average regular index_per_batch": sum(RI) / len(RI), "average adjusted index_per_batch": sum(ARI) / len(ARI), "# of images": self.config["our_method"].getint("max_images"), "regular index_per_batch": RI, "adjusted index_per_batch": ARI}
+
+		with open('index_results.csv', 'a') as csv_file:
+			dict_object = csv.DictWriter(csv_file, fieldnames=field_names) 
+			dict_object.writerow(results_dict) 
+
+		with open(r'/home/ifrah/longterm_semantic_map/nlmap_dev_huda/nlmap_hotcake/index_result.txt', 'w') as fp:
+			fp.write(str(self.index_per_batch))
+		
+
+		# make another csv here (or in a helper is better) with actual cluster groupings using the gts in each
+		self.save_clusters_gts()
+
+		################### end of clustering ##################
 		if self.config["cache"].getboolean("images"):
 			print(df["image_index"].dtypes)
 			df.to_csv(f"{self.cache_path}_embeddings.csv")
-			print("done with storing cache of embedding is done")	
 
+		
 	def compute_text_embeddings(self):
 		self.cache_text_exists = os.path.isfile(f"{self.cache_path}_text")
+		print(self.cache_text_exists)
 
 		#if text cache should be used and it exists, load it
 		if self.config["cache"].getboolean("text") and self.cache_text_exists:
@@ -751,6 +845,7 @@ class NLMap():
 		groundtruth anno index
 		'''
 		tolerance = float(self.config['our_method']['bbox_overlap_thresh']) # the tolerated difference between the predicted bounding box and the ground truth (for each corner of the bounding box)
+
 		# find the corresponding ground truth based on the bounding box
 		best_overlap = 0
 		best_centroid = None
@@ -861,7 +956,68 @@ class NLMap():
 
 						break #move onto next category
 
+	def cluster_accuracy(self, labels_gt, labels_pred):
 
+		# generate integer labels based on the ground truths
+		
+		# relabeling the images that are noise as being in their own cluster with only one image in each
+		adjusted_for_noise = []
+		i = 100
+		for index in labels_pred:
+			if index == -1:
+				adjusted_for_noise.append(i)
+				i += 1
+				continue
+			adjusted_for_noise.append(index)
+			
+		labels_pred = adjusted_for_noise
+		print(f"labels pred: {labels_pred}")		
+		RI = rand_score(labels_gt, labels_pred)
+		ARI = adjusted_rand_score(labels_gt, labels_pred)
+		return RI, ARI
+
+		# TODO initialize a csv that contains the eps, samples, and embedding type in the name ?
+
+	# def get_gt_lables(self, objects_df):
+
+	# 	################ put this code in a class variable
+	# 	label_encoder = preprocessing.LabelEncoder() 
+	# 	gt_labels = list(self.label_dict.keys())
+	# 	labels = label_encoder.fit(gt_labels)
+	# 	labels = label_encoder.transform(gt_labels)
+	# 	print(f"labels are: {labels}")
+
+	# 	# creating a dictionary where the keys are the ground truth text labels, and the values are the numbers assigned to each using label_encoder
+		
+	# 	labels_dict = {}
+	# 	i = 0
+	# 	for gt in gt_labels:
+	# 		labels_dict[gt] = labels[i]
+	# 		i += 1
+
+	# 	# return labels_dict
+	# 	########################
+
+	# 	# objects df has a column called ground_truth_label_name
+	# 	labels_gt = [labels_dict[l] for l in objects_df['ground_truth_label_name'].tolist()]
+		
+	def save_clusters_gts(self):
+		print(f"label dict: {self.label_dict}")
+		df = pd.DataFrame(columns=["crop name", "gt objects"])
+		embedings_df = pd.read_csv(f"{self.cache_path}_embeddings.csv",  dtype={'image_index': 'object'}, index_col=0)
+
+		for batch in os.listdir(self.config["paths"]["cluster_dir"]):
+			for cluster in os.listdir(os.path.join(self.config["paths"]["cluster_dir"]), batch):
+				object_gts = []
+				for crop in (os.path.join(self.config["paths"]["cluster_dir"]), batch,cluster):
+					gt_label = df.loc[df['pred_anno_idx'] == crop]['ground_truth_label_name']
+					object_gts.append(gt_label)
+				df[len(df.index)] = ['crop', 'object_gts']
+		
+		df.to_csv(f'cluster_gts_{time.localtime()}')
+
+
+				
 
 if __name__ == "__main__":
 	### Parse arguments from command line
@@ -883,3 +1039,4 @@ if __name__ == "__main__":
 	#nlmap.viz_pointcloud()
 	# nlmap.viz_top_k(viz_2d=False,viz_pointcloud=False)
 	# nlmap.go_to_and_pick_top_k("Cup")
+
