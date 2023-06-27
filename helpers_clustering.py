@@ -47,6 +47,9 @@ def save_clusters_gts(config, cache_path, embedding_type, eps, samples):
 		'''
 			saves a csv with columns: [cluster path, list of all the round truth objects in the cluster]
 		'''
+
+		# add the position_x,position_y,position_z to each gt. so maybe do if only_pose save (gt_name, position_x,position_y,position_z)
+
 		df = pd.DataFrame(columns=["cluster path", "gt objects"])
 		embeddings_df = pd.read_csv(f"{cache_path}_embeddings.csv",  dtype={'image_index': 'object'}, index_col=0)
 		for batch in sorted(os.listdir(config["paths"]["cluster_dir"])):

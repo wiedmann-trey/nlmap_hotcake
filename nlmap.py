@@ -167,7 +167,7 @@ class NLMap():
 		
 		### Image initialization
 		self.image_names = os.listdir(self.data_dir_path)
-		if self.config["our_method"].getboolean("use_our_method"): # huda edit
+		if self.config["our_method"].getboolean("use_our_method") and self.config["our_method"].getboolean("KTH_dataset"): 
 			self.image_names = [image_name for image_name in self.image_names if ("label" not in image_name)] # only includes the actual full rgb images
 		else:
 			self.image_names = [image_name for image_name in self.image_names if "color" in image_name]
@@ -183,21 +183,19 @@ class NLMap():
 		#each image is mapped to a list of tuples of the form: (string representing ground truth label, list of ints for bounding box coordinates, list of floats for ground truth centroid)
 		self.ground_truths = {}
 		
-		# TODO add comment
+		# list of all images every object appears in
 		self.object_image_list = {}
 
 		# maps image name to ground truths detected in it
 		self.detected_ground_truths = {}
 
-		# TODO add comment
+		# data to provide for learned representation
 		self.learning_data = {}
-
-		# TODO add comment
 		self.learning_data["vild"] = []
 		self.learning_data["position"] = []
 		self.learning_data["label"] = []
 
-		# TODO add comment
+		# kets are ground truth text labels
 		self.label_dict = {}
 
 		# list of tuples. each tuple is several measures of cluster accuracy (like rand index, mutual information). Each tuple is for a different batch
@@ -218,40 +216,43 @@ class NLMap():
 				# if (filename[0:end_index] in str(xml_file)) and ".xml" in str(xml_file)]
 
 				# populating the ground truth dictionary for each image
-				# print(filename)
-				if ".jpg" in filename and "label" not in filename:
-					label_names = [label for label in os.listdir(self.data_dir_path) \
-								if ((filename[0:end_index] in str(label)) and ".jpg" in str(label) and "label" in str(label))]
-					i = 0
-					for label_name in label_names:
-						rmin, rmax, cmin, cmax = get_box(os.path.join(self.data_dir_path, label_name))
-						label_idx = int(label_name[:-4].split('_')[-1])
-						parsed_xml = ET.parse(os.path.join(self.data_dir_path, label_name[:-3] + "xml"))
-						root = parsed_xml.getroot()
-						# each image is mapped to a list of tuples of the form:
-						# (string representing ground truth label, list of ints for bounding box coordinates, list of floats for ground truth centroid)
-						# we extract the centroid from the ground truth .xml file
-						if root.attrib["label"] not in self.object_image_list:
-							self.object_image_list[root.attrib["label"]] = []
-						self.object_image_list[root.attrib["label"]].append(filename)
-						if root.attrib["label"] not in self.label_dict:
-							self.label_dict[root.attrib["label"]] = label_num
-							label_num += 1
+				if self.config["our_method"].getboolean("KTH_dataset"):
+					if ".jpg" in filename and "label" not in filename:
+						label_names = [label for label in os.listdir(self.data_dir_path) \
+									if ((filename[0:end_index] in str(label)) and ".jpg" in str(label) and "label" in str(label))]
+						i = 0
+						for label_name in label_names:
+							rmin, rmax, cmin, cmax = get_box(os.path.join(self.data_dir_path, label_name))
+							label_idx = int(label_name[:-4].split('_')[-1])
+							parsed_xml = ET.parse(os.path.join(self.data_dir_path, label_name[:-3] + "xml"))
+							root = parsed_xml.getroot()
+							# each image is mapped to a list of tuples of the form:
+							# (string representing ground truth label, list of ints for bounding box coordinates, list of floats for ground truth centroid)
+							# we extract the centroid from the ground truth .xml file
+							if root.attrib["label"] not in self.object_image_list:
+								self.object_image_list[root.attrib["label"]] = []
+							self.object_image_list[root.attrib["label"]].append(filename)
+							if root.attrib["label"] not in self.label_dict:
+								self.label_dict[root.attrib["label"]] = label_num
+								label_num += 1
 
-						if filename not in self.ground_truths:
-							self.ground_truths[filename] = []
-						if "2014" in label_name: 
-							self.ground_truths[filename].append((root.attrib["label"], [rmin, rmax, cmin, cmax], [float(i) for i in root[0].text.split(" ")], label_idx))
-						if "2016" in label_name or "2015" in label_name:
-							self.ground_truths[filename].append((root.attrib["label"], [rmin, rmax, cmin, cmax], [float(i) for i in root[2].text.split(" ")], label_idx))
-						i += 1
+							if filename not in self.ground_truths:
+								self.ground_truths[filename] = []
+							if "2014" in label_name: 
+								self.ground_truths[filename].append((root.attrib["label"], [rmin, rmax, cmin, cmax], [float(i) for i in root[0].text.split(" ")], label_idx))
+							if "2016" in label_name or "2015" in label_name:
+								self.ground_truths[filename].append((root.attrib["label"], [rmin, rmax, cmin, cmax], [float(i) for i in root[2].text.split(" ")], label_idx))
+							i += 1
 				
 			# print(self.ground_truths)
 			# print(self.object_image_list)
 
 
-
-		columns = ["ground_truth_overlap", 'position_x', 'position_y','position_z', 'position_?', "bounding_box_y1","bounding_box_x1",  "bounding_box_y2","bounding_box_x2", "image_name", 'image_index',"pred_anno_idx", 'ground_truth_label_name', 'ground_truth_anno_idx', "ground_truth_bounding_box_y1","ground_truth_bounding_box_x1",  "ground_truth_bounding_box_y2","ground_truth_bounding_box_x2"]
+		# columns of the dataframe 
+		if self.config["our_method"].getboolean("KTH_dataset"):
+			columns = ["ground_truth_overlap", 'position_x', 'position_y','position_z', 'position_?', "bounding_box_y1","bounding_box_x1",  "bounding_box_y2","bounding_box_x2", "image_name", 'image_index',"pred_anno_idx", 'ground_truth_label_name', 'ground_truth_anno_idx', "ground_truth_bounding_box_y1","ground_truth_bounding_box_x1",  "ground_truth_bounding_box_y2","ground_truth_bounding_box_x2"]
+		else:
+			columns = ['position_x', 'position_y','position_z', "bounding_box_y1","bounding_box_x1",  "bounding_box_y2","bounding_box_x2", "image_name", 'image_index',"pred_anno_idx"]
 		columns_emb_name = [f"vild_embedding_{i}" for i in range(FEAT_SIZE)]
 		columns = np.append(columns, columns_emb_name)
 		
@@ -289,20 +290,28 @@ class NLMap():
 			df = pd.DataFrame()
 			df = pd.DataFrame(columns = columns)
 			self.image_names = sorted(self.image_names)
+
+			# loop all dataset images
 			for image_name in tqdm(self.image_names):
 				if "label" in image_name:
 					continue
 				print(count)
+
 				max = int(self.config['our_method']['max_images'])
 				if count == max: 
 					break
 				count+=1
-				img_index = int(image_name.split("_")[-1].strip(".jpg"))
-				print(image_name.split("_"))
-				print(img_index)
-				# exit()
+
+				if self.config["our_method"].getboolean("KTH_dataset"):
+					img_index = int(image_name.split("_")[-1].strip(".jpg"))
+					print(image_name.split("_"))
+				else: #TODO change this
+					end_idx = image_name.index('.')
+					img_index = image_name[6:end_idx]
+		
+
 				torch.cuda.empty_cache()
-				print(image_name)
+
 				image_path = f"{self.data_dir_path}/{image_name}"
 
 				image,image_height,image_width,valid_indices,detection_roi_scores,detection_boxes,detection_masks,detection_visual_feat,rescaled_detection_boxes  = extract_roi_vild(image_path,self.session,params)
@@ -432,11 +441,11 @@ class NLMap():
 
 						self.save_anno_boxes(image_name,anno_idx, scores, raw_image, segmentations, rpn_score, crop, x1,x2,y1,y2)
 				
-				if image_name not in self.detected_ground_truths:
-						self.detected_ground_truths[image_name] = set()
+				if self.config["our_method"].getboolean("KTH_dataset") and image_name not in self.detected_ground_truths:
+					self.detected_ground_truths[image_name] = set()
 
 
-				if self.config["our_method"].getboolean("use_our_method"):
+				if self.config["our_method"].getboolean("use_our_method") and self.config["our_method"].getboolean("KTH_dataset"):
 					# keep track of crops already assigned a ground truth
 					assigned_crops = set()
 
@@ -483,9 +492,23 @@ class NLMap():
 							self.learning_data["vild"].append(detection_visual_feat[best_crop_idx])
 							self.learning_data["position"].append([float(x) for x in best_embedding[1:4]])
 							self.learning_data["label"].append(best_embedding[12])
+				else:
+					# loop through all detected crops in the image
+					for anno_idx in indices[0:int(n_boxes)]:
+						crop_fname = f"{self.cache_path}_{self.config['dir_names']['data']}_{image_name}_crop_{anno_idx}.jpeg"
 
-					# TODO: fig_size_w and h are a little hardcoded, make more general?
-					
+						bbox = rescaled_detection_boxes[anno_idx]
+						y1, x1, y2, x2 = int(np.floor(bbox[0])), int(np.floor(bbox[1])), int(np.ceil(bbox[2])), int(np.ceil(bbox[3]))
+						
+						_3d_poisiton = self.extract_3d_position(image_name, x1,x2,y1,y2)
+
+						embedding = np.append(_3d_poisiton, [y1, x1, y2, x2 ])
+						embedding = np.append(embedding, [image_name])
+						embedding = np.append(embedding, [img_index])
+						embedding = np.append(embedding, [crop_fname])
+						embedding = np.append(embedding, detection_visual_feat[anno_idx])
+						
+						df.loc[len(df.index)] = embedding
 					
 			if self.config["cache"].getboolean("images"):
 				pickle.dump(self.image2vectorvild_dir,open(f"{self.cache_path}_images_vild","wb"))
@@ -513,52 +536,54 @@ class NLMap():
 					pickle.dump(self.topk_vild_dir,open(f"{self.cache_path}_topk_vild","wb"))
 					pickle.dump(self.topk_clip_dir,open(f"{self.cache_path}_topk_clip","wb"))
 
-		label_encoder = preprocessing.LabelEncoder() 
-		gt_labels = list(self.label_dict.keys())
-		labels = label_encoder.fit(gt_labels)
-		labels = label_encoder.transform(gt_labels)
-		print(f"labels are: {labels}")
-		# populating the dictionary where the keys are the ground truth text labels, and the values are the numbers assigned to each using label_encoder
-		i = 0
-		for gt in gt_labels:
-			self.labels_to_ints[gt] = labels[i]
-			i += 1
+		if self.config["our_method"].getboolean("use_our_method") and self.config["our_method"].getboolean("KTH_dataset"):
+			# populating the dictionary where the keys are the ground truth text labels, and the values are the numbers assigned to each using label_encoder
+			# this dictionary is later used in measuring cluster accuracy
+			label_encoder = preprocessing.LabelEncoder() 
+			gt_labels = list(self.label_dict.keys())
+			labels = label_encoder.fit(gt_labels)
+			labels = label_encoder.transform(gt_labels)
+			print(f"labels are: {labels}")
+			i = 0
+			for gt in gt_labels:
+				self.labels_to_ints[gt] = labels[i]
+				i += 1
 
-		gt_detection_df = pd.DataFrame(columns=["Image Path", "Ground Truth Labels", "Detected Labels", "Undetected Labels", "Number Undetected"], index=self.detected_ground_truths.keys())
+			################## ground truth detection stats ################
+			# gt_detection_df = pd.DataFrame(columns=["Image Path", "Ground Truth Labels", "Detected Labels", "Undetected Labels", "Number Undetected"], index=self.detected_ground_truths.keys())
 
-		# ground truth detection stats
-		# gt_detection_stats = {}
-		# detection_count = 0
-		# for file in self.detected_ground_truths.keys():
-		# 	gt = self.ground_truths[file]
-		# 	gt_detection_stats[file] = set(range(len(gt)))
-		# 	detection_count += len(gt_detection_stats[file])
+			# gt_detection_stats = {}
+			# detection_count = 0
+			# for file in self.detected_ground_truths.keys():
+			# 	gt = self.ground_truths[file]
+			# 	gt_detection_stats[file] = set(range(len(gt)))
+			# 	detection_count += len(gt_detection_stats[file])
 
-		# total_gt_count = detection_count
-		# gt_detection_df["Ground Truth Labels"] = pd.Series(copy.deepcopy(gt_detection_stats))
+			# total_gt_count = detection_count
+			# gt_detection_df["Ground Truth Labels"] = pd.Series(copy.deepcopy(gt_detection_stats))
 
-		# print(f'total ground truth count: {detection_count}')
+			# print(f'total ground truth count: {detection_count}')
 
-		# for file, detections in self.detected_ground_truths.items():
-		# 	for detection in detections:
-		# 		if detection in gt_detection_stats[file]:
-		# 			gt_detection_stats[file].remove(detection)
-		# 			detection_count -= 1
+			# for file, detections in self.detected_ground_truths.items():
+			# 	for detection in detections:
+			# 		if detection in gt_detection_stats[file]:
+			# 			gt_detection_stats[file].remove(detection)
+			# 			detection_count -= 1
 
-		# gt_detection_df["Detected Labels"] = pd.Series(self.detected_ground_truths)
-		# gt_detection_df["Undetected Labels"] = pd.Series(gt_detection_stats)
+			# gt_detection_df["Detected Labels"] = pd.Series(self.detected_ground_truths)
+			# gt_detection_df["Undetected Labels"] = pd.Series(gt_detection_stats)
 
-		# print(f'undetected ground truths: {detection_count}')
-		# print(gt_detection_stats)
-		# print(gt_detection_df)
-		# gt_detection_df["Number Undetected"] = gt_detection_df["Undetected Labels"].str.len()
+			# print(f'undetected ground truths: {detection_count}')
+			# print(gt_detection_stats)
+			# print(gt_detection_df)
+			# gt_detection_df["Number Undetected"] = gt_detection_df["Undetected Labels"].str.len()
 
-		# gt_detection_df.to_csv(f"{self.cache_path}_gt_detections.csv")
+			# gt_detection_df.to_csv(f"{self.cache_path}_gt_detections.csv")
 
-		# with open(f'cache/gt_stats.txt', 'w') as f:
-		# 	f.write(f'Total Ground Truth Count: {total_gt_count}, Total Undetected: {detection_count}, Total Detected: {total_gt_count-detection_count}, Percent Detected: {(total_gt_count-detection_count)/float(total_gt_count)}')
+			# with open(f'cache/gt_stats.txt', 'w') as f:
+			# 	f.write(f'Total Ground Truth Count: {total_gt_count}, Total Undetected: {detection_count}, Total Detected: {total_gt_count-detection_count}, Percent Detected: {(total_gt_count-detection_count)/float(total_gt_count)}')
 
-		if self.config['our_method'].getboolean('learn_representation'):
+		if self.config["our_method"].getboolean("use_our_method") and self.config['our_method'].getboolean('learn_representation') and self.config["our_method"].getboolean("KTH_dataset"):
 			train_learned_representation(self.learning_data, self.label_dict)
 		if self.config["cache"].getboolean("images"):
 			print(df.head)
@@ -569,6 +594,8 @@ class NLMap():
 			
 		print("clustering starts")
 		print(df.columns)
+
+		# configs for what kind of embedding to use
 		if self.config["embedding_type"].getboolean("only_pose"):
 			subset_columns = np.append(columns_emb_name, ['position_x', 'position_y','position_z'])
 		elif self.config["embedding_type"].getboolean("vild_and_pose"):
@@ -599,6 +626,7 @@ class NLMap():
 		print(f"window step {window_step}")
 		print(f"number images {len(self.image_names)}")
 		
+		## finding the index of the last image to run clustering on
 		if int(self.config['our_method']['max_images']) > len(self.image_names):
 			last_image = len(self.image_names)
 		else:
@@ -607,11 +635,13 @@ class NLMap():
 		print(df.shape)
 		batch_cluster_count_df = pd.DataFrame() # dataframe with all batches
 		samples = 5
-		epsilon = 0.45
+		epsilon = 0.3
+
+		# loop through images with a sliding window
 		for window_end_idx in range(window_size, last_image, window_step):
 			objects_df = df.loc[df['image_name'].isin(self.image_names[window_end_idx-window_size:window_end_idx])]
 			print(f"images for batch {batch_number} are {self.image_names[window_end_idx-window_size:window_end_idx]}")
-			print(df.shape)
+			# print(df.shape)
 			objects_df = objects_df[subset_columns]
 			if self.config['our_method'].getboolean('analysis'):
 			### do  clustering analysis
@@ -629,10 +659,12 @@ class NLMap():
 			
 			clustering = DBSCAN(eps=epsilon, min_samples=samples).fit(objects_df) 
 			objects_df.loc[:,'cluster'] = clustering.labels_
-			gt_labels_input = [self.labels_to_ints[l] for l in df.loc[df['image_name'].isin(self.image_names[window_end_idx-window_size:window_end_idx])]['ground_truth_label_name'].tolist()]
 
-			# self.index_per_batch is a list containing the results of cluster_accuracy for each batch
-			self.index_per_batch.append(cluster_accuracy(gt_labels_input, clustering.labels_))
+			# generating the cluster accuracy numbers
+			if self.config["our_method"].getboolean("use_our_method") and self.config["our_method"].getboolean("KTH_dataset"):
+				gt_labels_input = [self.labels_to_ints[l] for l in df.loc[df['image_name'].isin(self.image_names[window_end_idx-window_size:window_end_idx])]['ground_truth_label_name'].tolist()]
+				# self.index_per_batch is a list containing the results of cluster_accuracy for each batch
+				self.index_per_batch.append(cluster_accuracy(gt_labels_input, clustering.labels_))
 
 			cluster_dir = Path(os.path.join(self.config['paths']['cluster_dir'], f"batch_{batch_number}"))
 			 
@@ -649,14 +681,13 @@ class NLMap():
 
 			cluster_count_df = objects_df.cluster.value_counts().to_frame()
 			if self.config["cache"].getboolean("images"):
+				# generating how many images are in each cluster, for each batch, and saves it to a csv
+				# this saves the cache items in the clusters folder instead of in the cache, to avoid having a lot of csvs in the cache
 				cluster_count_df.to_csv(f"{self.cache_path}_cluster.csv")
 				clusters_list = [pd.DataFrame([batch_number], columns=['Batch number']), cluster_count_df, batch_cluster_count_df]
 				batch_cluster_count_df = pd.concat(clusters_list)
-				print(pd.concat(clusters_list))
-
-				# this saves the cache items in the clusters folder instead of in the cache, to avoid having a lot of csvs in the cache
-				batch_cluster_count_df.to_csv(f"{self.cache_path}_per_batch_cluster_{samples}_{epsilon}.csv") 
-
+				batch_cluster_count_df.to_csv(f"{self.cache_path}_per_batch_cluster_{samples}_{epsilon}.csv") # TODO add the embedding type
+				
 				# original code:
 				# df.to_csv(os.path.join(cluster_dir, "embeddings.csv"))
 				# cluster_count_df.to_csv(os.path.join(cluster_dir, "cluster.csv"))
@@ -666,66 +697,72 @@ class NLMap():
 				objects_df["y_component"]=X_embedded[:,1]
 				objects_df["image_index"] = df["image_index"]
 				objects_df["pred_anno_idx"] = df["pred_anno_idx"]
-				objects_df["ground_truth_anno_idx"] = df["ground_truth_anno_idx"]
+				if self.config["our_method"].getboolean("KTH_dataset"):
+					objects_df["ground_truth_anno_idx"] = df["ground_truth_anno_idx"]
 				
-
-			fig = px.scatter(objects_df, x="x_component", y="y_component", hover_data=["cluster", "ground_truth_anno_idx"], color = "image_index")
-			fig.update_layout(
+			if self.config["our_method"].getboolean("KTH_dataset"):
+				fig = px.scatter(objects_df, x="x_component", y="y_component", hover_data=["cluster", "ground_truth_anno_idx"], color = "image_index")
+				fig.update_layout(
+				height=800)
+			else:
+				fig = px.scatter(objects_df, x="x_component", y="y_component", hover_data=["cluster"], color = "image_index")
+				fig.update_layout(
 				height=800)
 			# html figs save to the cluster directory instead of to the figs directory to avoid having thousands of figs
 			# fig.write_html(f"{self.figs_dir_path}/clustering.html")
 			if os.path.isdir(cluster_dir):
 				fig.write_html(os.path.join(cluster_dir, f"clustering{batch_number}.html"))
-				batch_number += 1
+			batch_number += 1
 
 		############## generating a row to add to index_results.csv ############
-		field_names = ["embedding type", "epsilon", "min samples", "max_boxes", "min box area size", "window size", "max # of images", "average mutual info", "average normalized mutual info", "average adjusted mutual info", "average regular index_per_batch", "average adjusted index_per_batch", "regular index_per_batch", "adjusted index_per_batch", "mutual info", "normalized mutual info", "adjusted mutual info"]
-		RI = [float(elem[0]) for elem in self.index_per_batch]
-		ARI = [float(elem[1]) for elem in self.index_per_batch]
-		MI = [float(elem[2]) for elem in self.index_per_batch]
-		NMI = [float(elem[3]) for elem in self.index_per_batch]
-		AMI = [float(elem[4]) for elem in self.index_per_batch]
+		if self.config["our_method"].getboolean("use_our_method") and self.config["our_method"].getboolean("KTH_dataset"):
+			field_names = ["embedding type", "epsilon", "min samples", "max_boxes", "min box area size", "window size", "max # of images", "average mutual info", "average normalized mutual info", "average adjusted mutual info", "average regular index_per_batch", "average adjusted index_per_batch", "regular index_per_batch", "adjusted index_per_batch", "mutual info", "normalized mutual info", "adjusted mutual info"]
+			RI = [float(elem[0]) for elem in self.index_per_batch]
+			ARI = [float(elem[1]) for elem in self.index_per_batch]
+			MI = [float(elem[2]) for elem in self.index_per_batch]
+			NMI = [float(elem[3]) for elem in self.index_per_batch]
+			AMI = [float(elem[4]) for elem in self.index_per_batch]
 
-		if self.config["embedding_type"].getboolean("only_pose"):
-			embedding_type = "pose"
-		elif self.config["embedding_type"].getboolean("vild_and_pose"):
-			embedding_type = "vild_and_pose"
-		elif self.config["embedding_type"].getboolean("learned"):
-			embedding_type = "learned"
+			if self.config["embedding_type"].getboolean("only_pose"):
+				embedding_type = "pose"
+			elif self.config["embedding_type"].getboolean("vild_and_pose"):
+				embedding_type = "vild_and_pose"
+			elif self.config["embedding_type"].getboolean("learned"):
+				embedding_type = "learned"
+				
+			avARI = sum(ARI) / len(ARI)	
+			avRI = sum(RI) / len(RI)
+			avAMI = sum(AMI)/len(AMI)
+			avNMI = sum(NMI)/len(NMI)
+			avMI = sum(MI)/len(MI)
+
+			results_dict = {"embedding type": embedding_type, 
+			"epsilon": epsilon, 
+			"min samples": samples, 
+			"max_boxes": self.config["vild"].getint('max_boxes_to_draw'), 
+			"min box area size": self.config["vild"].getint('min_box_area'), 
+			"window size": self.config['our_method'].getint('window_size'), 
+			"max # of images": self.config["our_method"].getint("max_images"), 
+			"average mutual info": avMI, 
+			"average normalized mutual info": avNMI, 
+			"average adjusted mutual info": avAMI,
+			"average regular index_per_batch": avRI, 
+			"average adjusted index_per_batch": avARI, 
+			"mutual info": MI, 
+			"normalized mutual info": NMI, 
+			"adjusted mutual info": AMI,
+			"regular index_per_batch": RI, 
+			"adjusted index_per_batch": ARI}
+
+			with open('index_results_robotics.csv', 'a') as csv_file:
+				dict_object = csv.DictWriter(csv_file, fieldnames=field_names) 
+				dict_object.writerow(results_dict) 
+
+			with open(r'/home/ifrah/longterm_semantic_map/nlmap_dev_huda/nlmap_hotcake/index_result.txt', 'w') as fp:
+				fp.write(str(self.index_per_batch))
 			
-		avARI = sum(ARI) / len(ARI)	
-		avRI = sum(RI) / len(RI)
-		avAMI = sum(AMI)/len(AMI)
-		avNMI = sum(NMI)/len(NMI)
-		avMI = sum(MI)/len(MI)
-
-		results_dict = {"embedding type": embedding_type, 
-		  "epsilon": epsilon, 
-		  "min samples": samples, 
-		  "max_boxes": self.config["vild"].getint('max_boxes_to_draw'), 
-		  "min box area size": self.config["vild"].getint('min_box_area'), 
-		  "window size": self.config['our_method'].getint('window_size'), 
-		  "max # of images": self.config["our_method"].getint("max_images"), 
-		  "average mutual info": avMI, 
-		  "average normalized mutual info": avNMI, 
-		  "average adjusted mutual info": avAMI,
-		  "average regular index_per_batch": avRI, 
-		  "average adjusted index_per_batch": avARI, 
-		  "mutual info": MI, 
-		  "normalized mutual info": NMI, 
-		  "adjusted mutual info": AMI,
-		  "regular index_per_batch": RI, 
-		  "adjusted index_per_batch": ARI}
-
-		with open('index_results.csv', 'a') as csv_file:
-			dict_object = csv.DictWriter(csv_file, fieldnames=field_names) 
-			dict_object.writerow(results_dict) 
-
-		with open(r'/home/ifrah/longterm_semantic_map/nlmap_dev_huda/nlmap_hotcake/index_result.txt', 'w') as fp:
-			fp.write(str(self.index_per_batch))
-		
-		# saving a csv of what the clusters actually contain
-		save_clusters_gts(self.config, self.cache_path, embedding_type, epsilon, samples)
+			# saving a csv of what the clusters actually contain
+			save_clusters_gts(self.config, self.cache_path, embedding_type, epsilon, samples)
 		###### end of saving clustering accuracy results #######
 
 		################### end of clustering ##################
