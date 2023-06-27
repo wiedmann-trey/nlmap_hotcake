@@ -632,6 +632,13 @@ class NLMap():
 		else:
 			last_image = int(self.config['our_method']['max_images'])
 
+		if self.config["embedding_type"].getboolean("only_pose"):
+				embedding_type = "pose"
+			elif self.config["embedding_type"].getboolean("vild_and_pose"):
+				embedding_type = "vild_and_pose"
+			elif self.config["embedding_type"].getboolean("learned"):
+				embedding_type = "learned"
+
 		print(df.shape)
 		batch_cluster_count_df = pd.DataFrame() # dataframe with all batches
 		samples = 5
@@ -686,7 +693,7 @@ class NLMap():
 				cluster_count_df.to_csv(f"{self.cache_path}_cluster.csv")
 				clusters_list = [pd.DataFrame([batch_number], columns=['Batch number']), cluster_count_df, batch_cluster_count_df]
 				batch_cluster_count_df = pd.concat(clusters_list)
-				batch_cluster_count_df.to_csv(f"{self.cache_path}_per_batch_cluster_{samples}_{epsilon}.csv") # TODO add the embedding type
+				batch_cluster_count_df.to_csv(f"{self.cache_path}_per_batch_cluster_{embedding_type}_{samples}_{epsilon}.csv")
 				
 				# original code:
 				# df.to_csv(os.path.join(cluster_dir, "embeddings.csv"))
@@ -723,12 +730,12 @@ class NLMap():
 			NMI = [float(elem[3]) for elem in self.index_per_batch]
 			AMI = [float(elem[4]) for elem in self.index_per_batch]
 
-			if self.config["embedding_type"].getboolean("only_pose"):
-				embedding_type = "pose"
-			elif self.config["embedding_type"].getboolean("vild_and_pose"):
-				embedding_type = "vild_and_pose"
-			elif self.config["embedding_type"].getboolean("learned"):
-				embedding_type = "learned"
+			# if self.config["embedding_type"].getboolean("only_pose"):
+			# 	embedding_type = "pose"
+			# elif self.config["embedding_type"].getboolean("vild_and_pose"):
+			# 	embedding_type = "vild_and_pose"
+			# elif self.config["embedding_type"].getboolean("learned"):
+			# 	embedding_type = "learned"
 				
 			avARI = sum(ARI) / len(ARI)	
 			avRI = sum(RI) / len(RI)
