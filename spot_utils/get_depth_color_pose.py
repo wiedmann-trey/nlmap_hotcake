@@ -12,6 +12,8 @@ import sys
 import os
 import time
 
+from datetime import datetime
+
 import bosdyn.client
 import bosdyn.client.util
 from bosdyn.client.image import ImageClient
@@ -19,13 +21,14 @@ from bosdyn.client.image import ImageClient
 import cv2
 import numpy as np
 
+# python get_depth_color_pose.py --manual_images False --path_dir ../data --dir_name 2023-07-05-scan-1 138.16.161.21
 
 def main(argv):
     # Parse args
 
     parser = argparse.ArgumentParser()
     bosdyn.client.util.add_base_arguments(parser)
-    parser.add_argument("--manual_images", help="Whether images are taken manually or continuously",default="True")
+    parser.add_argument("--manual_images", help="Whether images are taken manually or continuously",default="False")
     parser.add_argument("--path_dir", help="path to directory where data is saved",default="../data")
     parser.add_argument("--dir_name", help="name of directory for where data is stored",default="default_data")
     options = parser.parse_args(argv)
@@ -76,12 +79,13 @@ def main(argv):
 
         # Capture and save images to disk
         image_responses = image_client.get_image_from_sources(sources)
-
+        
+        curr_time = datetime.utcnow().strftime('%Y-%m-%d-%H-%M-%S_%f')
         if robot_pose:
             frame_tree_snapshot = robot.get_frame_tree_snapshot()
             vision_tform_hand = get_a_tform_b(frame_tree_snapshot,"vision","hand")
 
-            img_to_pose_dir[counter] = {"position": [vision_tform_hand.position.x,vision_tform_hand.position.y,vision_tform_hand.position.z], 
+            img_to_pose_dir[curr_time] = {"position": [vision_tform_hand.position.x,vision_tform_hand.position.y,vision_tform_hand.position.z], 
             "quaternion(wxyz)": [vision_tform_hand.rotation.w,vision_tform_hand.rotation.x,vision_tform_hand.rotation.y,vision_tform_hand.rotation.z],
             "rotation_matrix": vision_tform_hand.rotation.to_matrix(),
             "rpy": [vision_tform_hand.rotation.to_roll(),vision_tform_hand.rotation.to_pitch(),vision_tform_hand.rotation.to_yaw()]}
@@ -145,10 +149,9 @@ def main(argv):
 
         # Add the two images together.
         out = cv2.addWeighted(visual_rgb, 0.5, depth_color, 0.5, 0)
-
-        cv2.imwrite(img_dir+"color_"+str(counter)+".jpg", cv_visual)
-        pickle.dump(cv_depth_meters, open(img_dir+"depth_"+str(counter),"wb"))
-        cv2.imwrite(img_dir+"combined_"+str(counter)+".jpg", out)
+        cv2.imwrite(f"{img_dir}color_{curr_time}.jpg", cv_visual)
+        pickle.dump(cv_depth_meters, open(f"{img_dir}depth_{curr_time}","wb"))
+        cv2.imwrite(f"{img_dir}combined_{curr_time}.jpg", out)
         counter += 1
 
         if visualize:
