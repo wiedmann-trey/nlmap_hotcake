@@ -97,12 +97,12 @@ class NLMap():
 
 		## TODO put these lines in a better place or delete before merging
 		# shutil.rmtree(f"{self.config['paths']['cache_dir']}")
-		shutil.rmtree(f"{self.config['paths']['figs_dir']}")
-		shutil.rmtree(f"{self.config['paths']['cluster_dir']}")
+		# shutil.rmtree(f"{self.config['paths']['figs_dir']}")
+		# shutil.rmtree(f"{self.config['paths']['cluster_dir']}")
 		
-		# os.mkdir(f"{self.config['paths']['cache_dir']}")
-		os.mkdir(f"{self.config['paths']['figs_dir']}")
-		os.mkdir(f"{self.config['paths']['cluster_dir']}")
+		# # os.mkdir(f"{self.config['paths']['cache_dir']}")
+		# os.mkdir(f"{self.config['paths']['figs_dir']}")
+		# os.mkdir(f"{self.config['paths']['cluster_dir']}")
 
 		### CLIP models set to none by default
 		self.clip_model = None
@@ -134,7 +134,7 @@ class NLMap():
 		self.data_dir_path = f"{self.config['paths']['data_dir_root']}/{self.config['dir_names']['data']}"
 		self.figs_dir_path = f"{self.config['paths']['figs_dir']}/{self.config['dir_names']['data']}"
 		if ((self.config["viz"].getboolean("save_whole_boxes") or self.config["viz"].getboolean("save_anno_boxes")) and not os.path.isdir(self.figs_dir_path)):
-			os.mkdir(self.figs_dir_path)
+			os.makedirs(self.figs_dir_path)
 
 		### Load pose data
 		## this sets up the directory variables with the pose information
@@ -152,6 +152,9 @@ class NLMap():
 				self.pcd = o3d.io.read_point_cloud(pointcloud_path)
 			else:
 				#raise Exception(f"use_pointcloud is true but {pointcloud_path} does not exist. Implement GENERATE POINTCLOUD")
+				# print("data")
+				# print(self.data_dir_path)
+				# print(os.listdir(self.data_dir_path))
 				self.pcd = make_pointcloud(data_path=f"{self.data_dir_path}/",pose_data_fname=self.config["file_names"]["pose"], pointcloud_fname=self.config["file_names"]["pointcloud"])
 
 		### Text initialization
@@ -166,7 +169,7 @@ class NLMap():
 		self.compute_text_embeddings()
 		
 		### Image initialization
-		self.image_names = os.listdir(self.data_dir_path)
+		self.image_names = sorted(os.listdir(self.data_dir_path))
 		if self.config["our_method"].getboolean("use_our_method") and self.config["our_method"].getboolean("KTH_dataset"): 
 			self.image_names = [image_name for image_name in self.image_names if ("label" not in image_name)] # only includes the actual full rgb images
 		else:
@@ -244,14 +247,14 @@ class NLMap():
 								self.ground_truths[filename].append((root.attrib["label"], [rmin, rmax, cmin, cmax], [float(i) for i in root[2].text.split(" ")], label_idx))
 							i += 1
 				
-			# print(self.ground_truths)
+			print(f"gts {self.ground_truths}")
 			# print(self.object_image_list)
 
 
 		# columns of the dataframe 
 		if self.config["our_method"].getboolean("KTH_dataset"):
 			columns = ["ground_truth_overlap", 'position_x', 'position_y','position_z', 'position_?', "bounding_box_y1","bounding_box_x1",  "bounding_box_y2","bounding_box_x2", "image_name", 'image_index',"pred_anno_idx", 'ground_truth_label_name', 'ground_truth_anno_idx', "ground_truth_bounding_box_y1","ground_truth_bounding_box_x1",  "ground_truth_bounding_box_y2","ground_truth_bounding_box_x2"]
-		else:
+		else: # using spot data
 			columns = ['position_x', 'position_y','position_z', "bounding_box_y1","bounding_box_x1",  "bounding_box_y2","bounding_box_x2", "image_name", 'image_index',"pred_anno_idx"]
 		columns_emb_name = [f"vild_embedding_{i}" for i in range(FEAT_SIZE)]
 		columns = np.append(columns, columns_emb_name)
@@ -265,6 +268,14 @@ class NLMap():
 			if not self.config["our_method"].getboolean("use_our_method"):
 				self.topk_vild_dir= pickle.load(open(f"{self.cache_path}_topk_vild","rb"))
 				self.topk_clip_dir = pickle.load(open(f"{self.cache_path}_topk_clip","rb"))
+
+			if self.config["our_method"].getboolean("KTH_dataset"):
+				for index, row in df.iterrows():
+					image_name = row["image_name"]
+					if image_name not in self.detected_ground_truths:
+						self.detected_ground_truths[image_name] = set()
+					self.detected_ground_truths[image_name].add(int(row["ground_truth_anno_idx"]))
+
 		else: #make image embeddings (either because you're not using cache, or because you don't have cache)
 			self.priority_queue_clip_dir = defaultdict(PriorityQueue) #keys will be category names. The priority will be negative score (since lowest gets dequeue) and items be image, anno_idx, and crop
 			self.priority_queue_vild_dir = defaultdict(PriorityQueue) #keys will be category names. The priority will be negative score (since lowest gets dequeue) and items be image, anno_idx, and crop
@@ -300,7 +311,7 @@ class NLMap():
 				max = int(self.config['our_method']['max_images'])
 				if count == max: 
 					break
-				count+=1
+				
 
 				if self.config["our_method"].getboolean("KTH_dataset"):
 					img_index = int(image_name.split("_")[-1].strip(".jpg"))
@@ -444,13 +455,13 @@ class NLMap():
 				if self.config["our_method"].getboolean("KTH_dataset") and image_name not in self.detected_ground_truths:
 					self.detected_ground_truths[image_name] = set()
 
-
+				print(f'hereeee')
 				if self.config["our_method"].getboolean("use_our_method") and self.config["our_method"].getboolean("KTH_dataset"):
 					# keep track of crops already assigned a ground truth
 					assigned_crops = set()
-
 					# loop through all ground truths in the image
 					for (gt_name, gt_bb, _3d_poisiton, gt_idx) in self.ground_truths[image_name]:
+						print(f'ground truths in loop {self.ground_truths[image_name]}')	
 						r1, r2, c1, c2 = gt_bb 
 						best_overlap = float(self.config['our_method']['bbox_overlap_thresh']) 
 						best_embedding = None
@@ -466,6 +477,12 @@ class NLMap():
 							bbox = rescaled_detection_boxes[anno_idx]
 							y1, x1, y2, x2 = int(np.floor(bbox[0])), int(np.floor(bbox[1])), int(np.ceil(bbox[2])), int(np.ceil(bbox[3]))
 							
+							# skipping boxes that are too big
+							print(f'y2 box area {(y2 - y1) * (x2 - x1)}')
+							if abs( (y2 - y1) * (x2 - x1) ) > int(self.config['our_method']['max_box_area']):
+								print(f'skippedddd crop {crop_fname}')
+								continue
+
 							# calculate overlap between the ground truth and detection
 							gt_overlap = intersect_over_union({'x1': x1, 'x2': x2, 'y1': y1, 'y2': y2}, {'x1':c1, 'x2':c2, 'y1':r1, 'y2':r2})
 
@@ -501,7 +518,8 @@ class NLMap():
 						y1, x1, y2, x2 = int(np.floor(bbox[0])), int(np.floor(bbox[1])), int(np.ceil(bbox[2])), int(np.ceil(bbox[3]))
 						
 						_3d_poisiton = self.extract_3d_position(image_name, x1,x2,y1,y2)
-
+						print(f"crop name: {crop_fname} ////////////////// extracted 3d pos: {_3d_poisiton}")
+						
 						embedding = np.append(_3d_poisiton, [y1, x1, y2, x2 ])
 						embedding = np.append(embedding, [image_name])
 						embedding = np.append(embedding, [img_index])
@@ -509,6 +527,7 @@ class NLMap():
 						embedding = np.append(embedding, detection_visual_feat[anno_idx])
 						
 						df.loc[len(df.index)] = embedding
+				count+=1
 					
 			if self.config["cache"].getboolean("images"):
 				pickle.dump(self.image2vectorvild_dir,open(f"{self.cache_path}_images_vild","wb"))
@@ -536,6 +555,8 @@ class NLMap():
 					pickle.dump(self.topk_vild_dir,open(f"{self.cache_path}_topk_vild","wb"))
 					pickle.dump(self.topk_clip_dir,open(f"{self.cache_path}_topk_clip","wb"))
 
+				
+
 		if self.config["our_method"].getboolean("use_our_method") and self.config["our_method"].getboolean("KTH_dataset"):
 			# populating the dictionary where the keys are the ground truth text labels, and the values are the numbers assigned to each using label_encoder
 			# this dictionary is later used in measuring cluster accuracy
@@ -550,38 +571,38 @@ class NLMap():
 				i += 1
 
 			################## ground truth detection stats ################
-			# gt_detection_df = pd.DataFrame(columns=["Image Path", "Ground Truth Labels", "Detected Labels", "Undetected Labels", "Number Undetected"], index=self.detected_ground_truths.keys())
+			gt_detection_df = pd.DataFrame(columns=["Image Path", "Ground Truth Labels", "Detected Labels", "Undetected Labels", "Number Undetected"], index=self.detected_ground_truths.keys())
 
-			# gt_detection_stats = {}
-			# detection_count = 0
-			# for file in self.detected_ground_truths.keys():
-			# 	gt = self.ground_truths[file]
-			# 	gt_detection_stats[file] = set(range(len(gt)))
-			# 	detection_count += len(gt_detection_stats[file])
+			gt_detection_stats = {}
+			detection_count = 0
+			for file in self.detected_ground_truths.keys():
+				gt = self.ground_truths[file]
+				gt_detection_stats[file] = set(range(len(gt)))
+				detection_count += len(gt_detection_stats[file])
 
-			# total_gt_count = detection_count
-			# gt_detection_df["Ground Truth Labels"] = pd.Series(copy.deepcopy(gt_detection_stats))
+			total_gt_count = detection_count
+			gt_detection_df["Ground Truth Labels"] = pd.Series(copy.deepcopy(gt_detection_stats))
 
-			# print(f'total ground truth count: {detection_count}')
+			print(f'total ground truth count: {detection_count}')
 
-			# for file, detections in self.detected_ground_truths.items():
-			# 	for detection in detections:
-			# 		if detection in gt_detection_stats[file]:
-			# 			gt_detection_stats[file].remove(detection)
-			# 			detection_count -= 1
+			for file, detections in self.detected_ground_truths.items():
+				for detection in detections:
+					if detection in gt_detection_stats[file]:
+						gt_detection_stats[file].remove(detection)
+						detection_count -= 1
+			print(f' detected gts {self.detected_ground_truths}')
+			gt_detection_df["Detected Labels"] = pd.Series(self.detected_ground_truths)
+			gt_detection_df["Undetected Labels"] = pd.Series(gt_detection_stats)
 
-			# gt_detection_df["Detected Labels"] = pd.Series(self.detected_ground_truths)
-			# gt_detection_df["Undetected Labels"] = pd.Series(gt_detection_stats)
+			print(f'undetected ground truths: {detection_count}')
+			print(gt_detection_stats)
+			print(gt_detection_df)
+			gt_detection_df["Number Undetected"] = gt_detection_df["Undetected Labels"].str.len()
 
-			# print(f'undetected ground truths: {detection_count}')
-			# print(gt_detection_stats)
-			# print(gt_detection_df)
-			# gt_detection_df["Number Undetected"] = gt_detection_df["Undetected Labels"].str.len()
+			gt_detection_df.to_csv(f"{self.cache_path}_gt_detections.csv")
 
-			# gt_detection_df.to_csv(f"{self.cache_path}_gt_detections.csv")
-
-			# with open(f'cache/gt_stats.txt', 'w') as f:
-			# 	f.write(f'Total Ground Truth Count: {total_gt_count}, Total Undetected: {detection_count}, Total Detected: {total_gt_count-detection_count}, Percent Detected: {(total_gt_count-detection_count)/float(total_gt_count)}')
+			with open(f'cache/gt_stats.txt', 'w') as f:
+				f.write(f'Total Ground Truth Count: {total_gt_count}, Total Undetected: {detection_count}, Total Detected: {total_gt_count-detection_count}, Percent Detected: {(total_gt_count-detection_count)/float(total_gt_count)}')
 
 		if self.config["our_method"].getboolean("use_our_method") and self.config['our_method'].getboolean('learn_representation') and self.config["our_method"].getboolean("KTH_dataset"):
 			train_learned_representation(self.learning_data, self.label_dict)
@@ -596,9 +617,9 @@ class NLMap():
 		print(df.columns)
 
 		# configs for what kind of embedding to use
-		if self.config["embedding_type"].getboolean("only_pose"):
+		if self.config["embedding_type"].getboolean("vild_and_pose"):
 			subset_columns = np.append(columns_emb_name, ['position_x', 'position_y','position_z'])
-		elif self.config["embedding_type"].getboolean("vild_and_pose"):
+		elif self.config["embedding_type"].getboolean("only_pose"):
 			subset_columns = ['position_x', 'position_y','position_z']
 		elif self.config["embedding_type"].getboolean("learned"):
 			with open('cache/number_classes.txt') as f:
@@ -634,21 +655,26 @@ class NLMap():
 
 		if self.config["embedding_type"].getboolean("only_pose"):
 				embedding_type = "pose"
-			elif self.config["embedding_type"].getboolean("vild_and_pose"):
-				embedding_type = "vild_and_pose"
-			elif self.config["embedding_type"].getboolean("learned"):
-				embedding_type = "learned"
+		elif self.config["embedding_type"].getboolean("vild_and_pose"):
+			embedding_type = "vild_and_pose"
+		elif self.config["embedding_type"].getboolean("learned"):
+			embedding_type = "learned"
 
 		print(df.shape)
 		batch_cluster_count_df = pd.DataFrame() # dataframe with all batches
-		samples = 5
-		epsilon = 0.3
-
+		# samples = 2
+		# epsilon = 0.35
+		samples = self.config['our_method'].getint('samples')
+		epsilon = self.config['our_method'].getfloat('epsilon')
+		
 		# loop through images with a sliding window
+		print(f"self images {self.image_names}")
 		for window_end_idx in range(window_size, last_image, window_step):
 			objects_df = df.loc[df['image_name'].isin(self.image_names[window_end_idx-window_size:window_end_idx])]
-			print(f"images for batch {batch_number} are {self.image_names[window_end_idx-window_size:window_end_idx]}")
+			# print(f"images for batch {batch_number} are {self.image_names[window_end_idx-window_size:window_end_idx]}")
 			# print(df.shape)
+			# batch_images = image_list[step * batch_number : step * batch_number + window_size]
+			# print(f"predicted imaes for batch {batch_number} are {self.image_names[window_step*batch_number: window_step*batch_number+window_size]}")
 			objects_df = objects_df[subset_columns]
 			if self.config['our_method'].getboolean('analysis'):
 			### do  clustering analysis
@@ -661,6 +687,8 @@ class NLMap():
 				distances = distances[:,1]
 				plt.plot(distances) # eps is on the y axis
 				plt.title("Clusters determined by DBSCAN")
+				# if not os.path.exists(self.figs_dir_path):
+				# 	os.makedirs(self.figs_dir_path)
 				plt.savefig(f"{self.figs_dir_path}/distances_{batch_number}.jpg", bbox_inches='tight')
 				plt.close()
 			
@@ -723,7 +751,8 @@ class NLMap():
 
 		############## generating a row to add to index_results.csv ############
 		if self.config["our_method"].getboolean("use_our_method") and self.config["our_method"].getboolean("KTH_dataset"):
-			field_names = ["embedding type", "epsilon", "min samples", "max_boxes", "min box area size", "window size", "max # of images", "average mutual info", "average normalized mutual info", "average adjusted mutual info", "average regular index_per_batch", "average adjusted index_per_batch", "regular index_per_batch", "adjusted index_per_batch", "mutual info", "normalized mutual info", "adjusted mutual info"]
+			# field_names = ["embedding type", "epsilon", "min samples", "max_boxes", "min box area size", "window step", "window size", "max # of images", "average mutual info", "average normalized mutual info", "average adjusted mutual info", "average regular index_per_batch", "average adjusted index_per_batch", "regular index_per_batch", "adjusted index_per_batch", "mutual info", "normalized mutual info", "adjusted mutual info"]
+			field_names = ["embedding type", "epsilon", "min samples", "max_boxes", "min box area size", "window step", "window size", "max # of images", "average mutual info", "average normalized mutual info", "average adjusted mutual info", "average regular index_per_batch", "average adjusted index_per_batch"]
 			RI = [float(elem[0]) for elem in self.index_per_batch]
 			ARI = [float(elem[1]) for elem in self.index_per_batch]
 			MI = [float(elem[2]) for elem in self.index_per_batch]
@@ -747,21 +776,22 @@ class NLMap():
 			"epsilon": epsilon, 
 			"min samples": samples, 
 			"max_boxes": self.config["vild"].getint('max_boxes_to_draw'), 
-			"min box area size": self.config["vild"].getint('min_box_area'), 
+			"min box area size": self.config["vild"].getint('min_box_area'),
+			"window step": self.config['our_method'].getint('window_step'), 
 			"window size": self.config['our_method'].getint('window_size'), 
 			"max # of images": self.config["our_method"].getint("max_images"), 
 			"average mutual info": avMI, 
 			"average normalized mutual info": avNMI, 
 			"average adjusted mutual info": avAMI,
 			"average regular index_per_batch": avRI, 
-			"average adjusted index_per_batch": avARI, 
-			"mutual info": MI, 
-			"normalized mutual info": NMI, 
-			"adjusted mutual info": AMI,
-			"regular index_per_batch": RI, 
-			"adjusted index_per_batch": ARI}
+			"average adjusted index_per_batch": avARI}
+			# "mutual info": MI, 
+			# "normalized mutual info": NMI, 
+			# "adjusted mutual info": AMI,
+			# "regular index_per_batch": RI, 
+			# "adjusted index_per_batch": ARI}
 
-			with open('index_results_robotics.csv', 'a') as csv_file:
+			with open('index_results.csv', 'a') as csv_file:
 				dict_object = csv.DictWriter(csv_file, fieldnames=field_names) 
 				dict_object.writerow(results_dict) 
 
@@ -769,7 +799,7 @@ class NLMap():
 				fp.write(str(self.index_per_batch))
 			
 			# saving a csv of what the clusters actually contain
-			save_clusters_gts(self.config, self.cache_path, embedding_type, epsilon, samples)
+			save_clusters_gts(self.config, self.cache_path, embedding_type, epsilon, samples, self.image_names)
 		###### end of saving clustering accuracy results #######
 
 		################### end of clustering ##################
@@ -872,7 +902,7 @@ class NLMap():
 				#### Point cloud stuff
 				#### Just show CLIP for now!
 				file_num = int(top_k_item_clip[1][0].split("_")[1].split(".")[0])  ########## TODO this is the pose calculation
-				depth_img = pickle.load(open(f"{self.data_dir_path}/depth_{str(file_num)}","rb")) ## TODO: change this for the new dataset
+				depth_img = pickle.load(open(f"{self.data_dir_path}/depth_{str(file_num)}","rb")) 
 				rotation_matrix = self.pose_dir[file_num]['rotation_matrix']
 				position = self.pose_dir[file_num]['position'] ############# TODO read from xml
 				## have if else for the code below. add a config variable
@@ -911,10 +941,14 @@ class NLMap():
 	def extract_3d_position(self, filename, xmin,xmax,ymin,ymax):
 		#### Point cloud stuff
 		#### Just show CLIP for now!
-		file_num = int(filename.split("_")[1].split(".")[0])  ########## TODO this is the pose calculation
-		depth_img = pickle.load(open(f"{self.data_dir_path}/depth_{str(file_num)}","rb")) ## TODO: change this for the new dataset
-		rotation_matrix = self.pose_dir[file_num]['rotation_matrix']
-		position = self.pose_dir[file_num]['position'] ############# TODO read from xml
+		# file_num = int(filename.split("_")[1].split(".")[0])  ########## TODO this is the pose calculation
+		# depth_img = pickle.load(open(f"{self.data_dir_path}/depth_{str(file_num)}","rb")) 
+		file_num = f'{filename.split("_")[1]}_{filename.split("_")[2]}'.split(".")[0]
+		print(f"filename {filename}")
+		print(f"file_num {file_num}")
+		depth_img = pickle.load(open(f"{self.data_dir_path}/depth_{file_num}","rb")) 
+		rotation_matrix = self.pose_dir[filename.removeprefix("color_").removesuffix(".jpg")]['rotation_matrix'] # this errors
+		position = self.pose_dir[filename.removeprefix("color_").removesuffix(".jpg")]['position'] ############# TODO read from xml
 		## have if else for the code below. add a config variable
 		# ymin, xmin, ymax, xmax = top_k_item_clip[1][3:]
 
