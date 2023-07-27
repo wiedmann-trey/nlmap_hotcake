@@ -130,7 +130,7 @@ def save_clusters_gts(config, cache_path, embedding_type, eps, samples, image_li
 				cluster_count += 1
 		
 		average_cluster_per_batch = cluster_count/batch_count
-		df.loc[1] = ["average_number_of_clusters", average_cluster_per_batch, None]
+		df.loc[0] = ["average_number_of_clusters", average_cluster_per_batch, None]
 
 		if config["our_method"].getboolean("KTH_dataset"):
 			print('is it saving')
