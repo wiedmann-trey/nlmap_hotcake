@@ -13,6 +13,7 @@ import time
 import datetime
 import copy
 import csv
+import pprint
 
 from nlmap_utils import get_best_clip_vild_dirs
 from spot_utils.utils import pixel_to_vision_frame, pixel_to_vision_frame_depth_provided, arm_object_grasp, open_gripper
@@ -74,6 +75,8 @@ FEAT_SIZE = 512
 
 from sklearn import preprocessing
 
+bad_point_count = 0
+good_point_count = 0
 
 class NLMap():
 	def __init__(self,config_path="./configs/example.ini", tol=None, bb_num=None):
@@ -516,7 +519,6 @@ class NLMap():
 
 						bbox = rescaled_detection_boxes[anno_idx]
 						y1, x1, y2, x2 = int(np.floor(bbox[0])), int(np.floor(bbox[1])), int(np.ceil(bbox[2])), int(np.ceil(bbox[3]))
-						
 						_3d_poisiton = self.extract_3d_position(image_name, x1,x2,y1,y2)
 						print(f"crop name: {crop_fname} ////////////////// extracted 3d pos: {_3d_poisiton}")
 						
@@ -601,8 +603,12 @@ class NLMap():
 
 			gt_detection_df.to_csv(f"{self.cache_path}_gt_detections.csv")
 
-			with open(f'cache/gt_stats.txt', 'w') as f:
+			with open(f'{self.cache_path}gt_stats.txt', 'w') as f:
 				f.write(f'Total Ground Truth Count: {total_gt_count}, Total Undetected: {detection_count}, Total Detected: {total_gt_count-detection_count}, Percent Detected: {(total_gt_count-detection_count)/float(total_gt_count)}')
+
+		with open(f'{self.cache_path}depth_stats.txt', 'w') as f:
+			f.write(f'Bad point count: {bad_point_count}, good point count: {good_point_count}')
+
 
 		if self.config["our_method"].getboolean("use_our_method") and self.config['our_method'].getboolean('learn_representation') and self.config["our_method"].getboolean("KTH_dataset"):
 			train_learned_representation(self.learning_data, self.label_dict)
@@ -654,7 +660,7 @@ class NLMap():
 			last_image = int(self.config['our_method']['max_images'])
 
 		if self.config["embedding_type"].getboolean("only_pose"):
-				embedding_type = "pose"
+			embedding_type = "pose"
 		elif self.config["embedding_type"].getboolean("vild_and_pose"):
 			embedding_type = "vild_and_pose"
 		elif self.config["embedding_type"].getboolean("learned"):
@@ -718,6 +724,8 @@ class NLMap():
 			if self.config["cache"].getboolean("images"):
 				# generating how many images are in each cluster, for each batch, and saves it to a csv
 				# this saves the cache items in the clusters folder instead of in the cache, to avoid having a lot of csvs in the cache
+
+				# TODO make less convoluted
 				cluster_count_df.to_csv(f"{self.cache_path}_cluster.csv")
 				clusters_list = [pd.DataFrame([batch_number], columns=['Batch number']), cluster_count_df, batch_cluster_count_df]
 				batch_cluster_count_df = pd.concat(clusters_list)
@@ -799,6 +807,9 @@ class NLMap():
 				fp.write(str(self.index_per_batch))
 			
 			# saving a csv of what the clusters actually contain
+			save_clusters_gts(self.config, self.cache_path, embedding_type, epsilon, samples, self.image_names)
+		elif self.config["our_method"].getboolean("use_our_method"):
+			print('save clusters gets called')
 			save_clusters_gts(self.config, self.cache_path, embedding_type, epsilon, samples, self.image_names)
 		###### end of saving clustering accuracy results #######
 
@@ -944,10 +955,16 @@ class NLMap():
 		# file_num = int(filename.split("_")[1].split(".")[0])  ########## TODO this is the pose calculation
 		# depth_img = pickle.load(open(f"{self.data_dir_path}/depth_{str(file_num)}","rb")) 
 		file_num = f'{filename.split("_")[1]}_{filename.split("_")[2]}'.split(".")[0]
-		print(f"filename {filename}")
-		print(f"file_num {file_num}")
-		depth_img = pickle.load(open(f"{self.data_dir_path}/depth_{file_num}","rb")) 
-		rotation_matrix = self.pose_dir[filename.removeprefix("color_").removesuffix(".jpg")]['rotation_matrix'] # this errors
+		# print(f"filename {filename}")
+		# print(f"file_num {file_num}")
+		depth_img = pickle.load(open(f'{self.data_dir_path}/depth_{filename.removeprefix("color_").removesuffix(".jpg")}'.replace("//", "/"),"rb")) 
+		
+		print(f'depth img path : {self.data_dir_path}/depth_{filename.removeprefix("color_").removesuffix(".jpg")}'.replace("//", "/"))
+		print(f'depth img : {depth_img}')
+		pprint.pprint(depth_img)
+
+		print(f'is this the appropriate pose dict key? {filename.removeprefix("color_").removesuffix(".jpg")}')
+		rotation_matrix = self.pose_dir[filename.removeprefix("color_").removesuffix(".jpg")]['rotation_matrix'] 
 		position = self.pose_dir[filename.removeprefix("color_").removesuffix(".jpg")]['position'] ############# TODO read from xml
 		## have if else for the code below. add a config variable
 		# ymin, xmin, ymax, xmax = top_k_item_clip[1][3:]
@@ -958,8 +975,15 @@ class NLMap():
 		transformed_point,bad_point = pixel_to_vision_frame(center_y,center_x,depth_img,rotation_matrix,position)
 		side_pointx,_ = pixel_to_vision_frame_depth_provided(center_y,xmax,depth_img[center_y,center_x],rotation_matrix,position)
 		side_pointy,_ = pixel_to_vision_frame_depth_provided(ymax,center_x,depth_img[center_y,center_x],rotation_matrix,position)
-
+		print(f"bad point is {bad_point}")
 		#TODO: what should bb_size be for z? Right now, just making it same as x. Also needs to be axis aligned
+		
+		# TODO CSV of filenames and 3d points
+		if bad_point:
+			bad_point_count += 1
+			return [0.0, 0.0, 0.0]
+		
+		good_point_count += 1
 		return transformed_point
 	
 	def go_to_and_pick_top_k(self, category_name):

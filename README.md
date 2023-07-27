@@ -3,6 +3,7 @@ This is a repository for an implementation of nlmap-saycan, with additional util
 nlmap-saycan: https://nlmap-saycan.github.io/
 
 # Setup
+If you have the environment setup, run conda activate nlmap_eric_env
 If you haven't yet, make a virtual environment and activate it, for example with conda:
 `conda create -n nlmap_spot python=3.9`
 `conda activate nlmap_spot`
@@ -118,3 +119,26 @@ Here we describe the types and meanings of the configuration file. The config fi
 \
 **[clip]**\
 `model` - string of the name of CLIP model\
+
+
+
+# Modifications to run nlmap for long-term association
+
+Run python nlmap.py --config ./configs/spot_configs.ini
+
+questions:
+1. do we use example.ini or spot.ini as the input config.
+2. is anything being done on nlmap_huda branch?
+3. 
+
+(add when to run spot.ini)
+
+# configs 
+learn_representation = False 
+
+# Outputs
+
+Per run, a CSV with clustering results, including a tuple of the ground truth and gt position for each crop, saved in /nlmap_hotcake/cluster_gt_csvs
+f"{cache_path}_per_batch_cluster_{embedding_type}_{samples}_{eps}.csv": a csv with the batch number and how many images are in each cluster. But the csv is messy and hard to read. It is used in the save_clusters_gts helper method
+
+

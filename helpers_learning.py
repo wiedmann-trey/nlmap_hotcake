@@ -4,6 +4,41 @@ import torchmetrics
 import matplotlib.pyplot as plt
 from sklearn import preprocessing
 
+class ContrastiveLoss(torch.nn.Module):
+    """
+    Contrastive loss function.
+    Based on: https://towardsdatascience.com/a-friendly-introduction-to-siamese-networks-85ab17522942
+    """
+
+    def __init__(self, margin=1.0):
+        super(ContrastiveLoss, self).__init__()
+        self.margin = margin
+
+    def forward(self, x0, x1, y):
+        # euclidian distance
+        diff = x0 - x1
+        dist_sq = torch.sum(torch.pow(diff, 2), 1)
+        dist = torch.sqrt(dist_sq)
+
+        mdist = self.margin - dist
+        dist = torch.clamp(mdist, min=0.0)
+        loss = y * dist_sq + (1 - y) * torch.pow(dist, 2)
+        loss = torch.sum(loss) / 2.0 / x0.size()[0]
+        return loss
+
+class SiameseNetwork(nn.Module):
+    def __init__(self, vild_dim=512, position_dim=3, representation_dim=256):
+        super(LearnRepresentation, self).__init__()
+
+        self.model = nn.Sequential(
+            nn.Linear(vild_dim+position_dim, representation_dim)
+        )
+        self.representation_dim = representation_dim
+
+    def forward(self, x):
+        x = self.model(x)
+        return x
+
 class LearnRepresentation(nn.Module):
     def __init__(self, n_classes, vild_dim=512, position_dim=3, representation_dim=256):
         super(LearnRepresentation, self).__init__()
@@ -25,7 +60,24 @@ class LearnRepresentation(nn.Module):
         if is_train:
             x = self.classify(x)
         return x
-    
+
+def train_siamese_network(data, batch_size=32):
+    data_len = min(250, len(data['label']))
+
+    le = preprocessing.LabelEncoder()
+    labels = torch.Tensor(le.fit_transform(data["label"][:data_len])).long()
+    class_n = len(le.classes_)
+    print(le.classes_)
+
+    paired_list = []
+
+    for i in range(data_len):
+        for j in range(i+1, data_len):
+            is_same_object = labels[i] == labels[j]
+            paired_list.append((data['vild'][i]+data['position'][i], data['vild'][j]+data['position'][j], is_same_object))
+
+    print(paired_list)
+
 def train_learned_representation(data, label_dict, n_epochs=30, batch_size=32, cache_path='cache/'):
     data_len = min(250, len(data['label']))
     vild_embeddings = torch.Tensor(data["vild"][:data_len])

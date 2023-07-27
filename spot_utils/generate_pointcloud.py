@@ -21,13 +21,14 @@ def make_pointcloud(data_path="../data/spot-depth-color-pose-data3/", pose_data_
 	total_pcds = []
 	total_colors = []
 	total_axes = []
-	for file_num in tqdm(range(num_files)):
-		rotation_matrix = pose_dir[file_num]['rotation_matrix']
-		position = pose_dir[file_num]['position']
+	for file_name in file_names:
+		rotation_matrix = pose_dir[file_name.removeprefix("color_").removesuffix(".jpg")]['rotation_matrix']
+		position = pose_dir[file_name.removeprefix("color_").removesuffix(".jpg")]['position']
 
-		color_img = cv2.imread(f"{data_path}color_{str(file_num)}.jpg")
+		color_img = cv2.imread(os.path.join(data_path.removesuffix("/"), f"color_{file_name}"))
+		print(os.path.join(data_path.removesuffix("/"), f"color_{file_name}"))
 		color_img = color_img[:,:,::-1]  # RGB-> BGR
-		depth_img = pickle.load(open(f"{data_path}depth_{str(file_num)}","rb"))#cv2.imread(dir_path+dir_name+"depth_"+str(file_num)+".jpg")
+		depth_img = pickle.load(open(os.path.join(data_path.removesuffix("/"), f"depth_{file_name}"),"rb"))#cv2.imread(dir_path+dir_name+"depth_"+str(file_num)+".jpg")
 
 		H,W = depth_img.shape
 		for i in range(H):
