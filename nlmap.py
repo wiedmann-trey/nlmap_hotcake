@@ -15,6 +15,7 @@ import copy
 import csv
 import pprint
 
+from matplotlib.image import imread
 from nlmap_utils import get_best_clip_vild_dirs
 from spot_utils.utils import pixel_to_vision_frame, pixel_to_vision_frame_depth_provided, arm_object_grasp, open_gripper
 from spot_utils.generate_pointcloud import make_pointcloud
@@ -67,16 +68,13 @@ import PIL.Image
 import shutil
 
 # importing from helper files
-from helpers_learning import train_learned_representation, LearnRepresentation
+from helpers_learning import train_learned_representation, LearnRepresentation, SiameseNetwork, train_siamese_network
 from helpers_clustering import save_clusters_gts, cluster_accuracy
 from helpers_detection import get_box, intersect_over_union
 
 FEAT_SIZE = 512
 
 from sklearn import preprocessing
-
-bad_point_count = 0
-good_point_count = 0
 
 class NLMap():
 	def __init__(self,config_path="./configs/example.ini", tol=None, bb_num=None):
@@ -97,15 +95,6 @@ class NLMap():
 
 		### device setting
 		device = "cuda" if torch.cuda.is_available() else "cpu"
-
-		## TODO put these lines in a better place or delete before merging
-		# shutil.rmtree(f"{self.config['paths']['cache_dir']}")
-		# shutil.rmtree(f"{self.config['paths']['figs_dir']}")
-		# shutil.rmtree(f"{self.config['paths']['cluster_dir']}")
-		
-		# # os.mkdir(f"{self.config['paths']['cache_dir']}")
-		# os.mkdir(f"{self.config['paths']['figs_dir']}")
-		# os.mkdir(f"{self.config['paths']['cluster_dir']}")
 
 		### CLIP models set to none by default
 		self.clip_model = None
@@ -141,7 +130,7 @@ class NLMap():
 
 		### Load pose data
 		## this sets up the directory variables with the pose information
-		if self.config["pose"].getboolean("use_pose"): ##### TODO read from .xml
+		if self.config["pose"].getboolean("use_pose"): 
 			pose_path = f"{self.data_dir_path}/{self.config['file_names']['pose']}"
 			try:
 				self.pose_dir = pickle.load(open(pose_path,"rb")) 
@@ -195,13 +184,17 @@ class NLMap():
 		# maps image name to ground truths detected in it
 		self.detected_ground_truths = {}
 
-		# data to provide for learned representation
+		# data to provide for learned representation (siamese network)
 		self.learning_data = {}
 		self.learning_data["vild"] = []
 		self.learning_data["position"] = []
 		self.learning_data["label"] = []
 
-		# kets are ground truth text labels
+		# keeping track of points we can't find depth data for
+		self.bad_point_count = 0
+		self.good_point_count = 0
+
+		# keys are ground truth text labels
 		self.label_dict = {}
 
 		# list of tuples. each tuple is several measures of cluster accuracy (like rand index, mutual information). Each tuple is for a different batch
@@ -237,7 +230,11 @@ class NLMap():
 							# we extract the centroid from the ground truth .xml file
 							if root.attrib["label"] not in self.object_image_list:
 								self.object_image_list[root.attrib["label"]] = []
+
+							# list of images each object appears in
 							self.object_image_list[root.attrib["label"]].append(filename)
+
+							# assigning each ground truth object label a unique ID
 							if root.attrib["label"] not in self.label_dict:
 								self.label_dict[root.attrib["label"]] = label_num
 								label_num += 1
@@ -253,9 +250,23 @@ class NLMap():
 			print(f"gts {self.ground_truths}")
 			# print(self.object_image_list)
 
+		if self.config["our_method"].getboolean("use_our_method") and self.config["our_method"].getboolean("KTH_dataset"):
+			# populating the dictionary where the keys are the ground truth text labels, and the values are the numbers assigned to each using label_encoder
+			# this dictionary is later used in measuring cluster accuracy
+			label_encoder = preprocessing.LabelEncoder() 
+			gt_labels = list(self.label_dict.keys())
+			labels = label_encoder.fit(gt_labels)
+			labels = label_encoder.transform(gt_labels)
+			print(f"labels are: {labels}")
+			i = 0
+			for gt in gt_labels:
+				self.labels_to_ints[gt] = labels[i]
+				i += 1
 
 		# columns of the dataframe 
 		if self.config["our_method"].getboolean("KTH_dataset"):
+		    ## ground truth overlap is how much the predicted crop overlaps with ground truth box
+			##column stores information for each detected groundtruth (crop >  threshold)
 			columns = ["ground_truth_overlap", 'position_x', 'position_y','position_z', 'position_?', "bounding_box_y1","bounding_box_x1",  "bounding_box_y2","bounding_box_x2", "image_name", 'image_index',"pred_anno_idx", 'ground_truth_label_name', 'ground_truth_anno_idx', "ground_truth_bounding_box_y1","ground_truth_bounding_box_x1",  "ground_truth_bounding_box_y2","ground_truth_bounding_box_x2"]
 		else: # using spot data
 			columns = ['position_x', 'position_y','position_z', "bounding_box_y1","bounding_box_x1",  "bounding_box_y2","bounding_box_x2", "image_name", 'image_index',"pred_anno_idx"]
@@ -277,7 +288,12 @@ class NLMap():
 					image_name = row["image_name"]
 					if image_name not in self.detected_ground_truths:
 						self.detected_ground_truths[image_name] = set()
+					## detected_ground_truths tracks which ground truth annotations have been detected in each image
 					self.detected_ground_truths[image_name].add(int(row["ground_truth_anno_idx"]))
+					emb = [row[e] for e in row.keys() if "vild_embedding" in e]
+					self.learning_data["vild"].append(emb)
+					self.learning_data["position"].append([row['position_x'], row['position_y'], row['position_z']])
+					self.learning_data["label"].append(row["ground_truth_label_name"])
 
 		else: #make image embeddings (either because you're not using cache, or because you don't have cache)
 			self.priority_queue_clip_dir = defaultdict(PriorityQueue) #keys will be category names. The priority will be negative score (since lowest gets dequeue) and items be image, anno_idx, and crop
@@ -409,15 +425,24 @@ class NLMap():
 
 					y1, x1, y2, x2 = int(np.floor(bbox[0])), int(np.floor(bbox[1])), int(np.ceil(bbox[2])), int(np.ceil(bbox[3]))
 					crop = np.copy(raw_image[y1:y2, x1:x2, :])
-
+					
+					# getting a crop of the combined depth and rgb image
+					if self.config['our_method'].getboolean('use_our_method') and not self.config["our_method"].getboolean("KTH_dataset"):
+						combined_image_path = image_path.replace('color', 'combined')
+						combined_image = imread(combined_image_path)
+						raw_combined_image = np.array(combined_image)
+						combined_crop = np.copy(raw_combined_image[y1:y2, x1:x2, :])
+						
 					### Add crop to priority queue for ranking scores for VILD
 						
 					### Run CLIP vision model on crop
 					crop_pil = Image.fromarray(crop)
+					combined_crop_pil = Image.fromarray(combined_crop)
 
-					#if (use cache and cache does not exist) or (cache image does not exist), process the data
-					if ((self.config["cache"].getboolean("images") and not self.cache_image_exists) or (not self.cache_image_exists)):
+					#if (cache image does not exist), process the data
+					if (not self.cache_image_exists):
 						crop_fname = f"{self.cache_path}_{self.config['dir_names']['data']}_{image_name}_crop_{anno_idx}.jpeg"
+						combined_crop_fname = f"{self.cache_path}_{self.config['dir_names']['data']}_{image_name}_crop_{anno_idx}_combined.jpeg"
 						print(f"original name: {crop_fname}")
 						# making the crop names not super long
 						# if self.config["our_method"].getboolean("KTH_dataset"):
@@ -426,6 +451,8 @@ class NLMap():
 						# combined_moving_static_KTH_combined_moving_static_KTH_20140820_patrol_run_2_room_1_rgb_0008.jpg_crop_3
 
 						crop_pil.save(crop_fname)
+						combined_crop_pil.save(combined_crop_fname)
+
 						crop_back = Image.open(crop_fname)
 						if self.config["our_method"].getboolean("use_clip"):
 							crop_processed = self.clip_preprocess(crop_back).unsqueeze(0).to(device)
@@ -446,12 +473,12 @@ class NLMap():
 						for idx, category_name in enumerate(self.category_names):
 							if self.config["our_method"].getboolean("use_clip"):
 								
-								self.priority_queue_clip_dir[category_name].put((-clip_scores[0][idx], (image_name,anno_idx,crop,ymin[anno_idx],xmin[anno_idx],ymax[anno_idx],xmax[anno_idx]))) #TODO: make this an object to more interpretable
+								self.priority_queue_clip_dir[category_name].put((-clip_scores[0][idx], (image_name,anno_idx,crop,ymin[anno_idx],xmin[anno_idx],ymax[anno_idx],xmax[anno_idx])))
 						
 							new_item = (-scores[idx], (image_name,anno_idx,crop,ymin[anno_idx],xmin[anno_idx],ymax[anno_idx],xmax[anno_idx]))
 							if new_item in self.priority_queue_vild_dir[category_name].queue:
 								raise Exception(f"{image_name} {anno_idx} already in queue for {category_name}")
-							self.priority_queue_vild_dir[category_name].put(new_item) #TODO: make this an object to more interpretable
+							self.priority_queue_vild_dir[category_name].put(new_item)
 
 						self.save_anno_boxes(image_name,anno_idx, scores, raw_image, segmentations, rpn_score, crop, x1,x2,y1,y2)
 				
@@ -557,63 +584,11 @@ class NLMap():
 					pickle.dump(self.topk_vild_dir,open(f"{self.cache_path}_topk_vild","wb"))
 					pickle.dump(self.topk_clip_dir,open(f"{self.cache_path}_topk_clip","wb"))
 
-				
-
-		if self.config["our_method"].getboolean("use_our_method") and self.config["our_method"].getboolean("KTH_dataset"):
-			# populating the dictionary where the keys are the ground truth text labels, and the values are the numbers assigned to each using label_encoder
-			# this dictionary is later used in measuring cluster accuracy
-			label_encoder = preprocessing.LabelEncoder() 
-			gt_labels = list(self.label_dict.keys())
-			labels = label_encoder.fit(gt_labels)
-			labels = label_encoder.transform(gt_labels)
-			print(f"labels are: {labels}")
-			i = 0
-			for gt in gt_labels:
-				self.labels_to_ints[gt] = labels[i]
-				i += 1
-
-			################## ground truth detection stats ################
-			gt_detection_df = pd.DataFrame(columns=["Image Path", "Ground Truth Labels", "Detected Labels", "Undetected Labels", "Number Undetected"], index=self.detected_ground_truths.keys())
-
-			gt_detection_stats = {}
-			detection_count = 0
-			for file in self.detected_ground_truths.keys():
-				gt = self.ground_truths[file]
-				gt_detection_stats[file] = set(range(len(gt)))
-				detection_count += len(gt_detection_stats[file])
-
-			total_gt_count = detection_count
-			gt_detection_df["Ground Truth Labels"] = pd.Series(copy.deepcopy(gt_detection_stats))
-
-			print(f'total ground truth count: {detection_count}')
-
-			for file, detections in self.detected_ground_truths.items():
-				for detection in detections:
-					if detection in gt_detection_stats[file]:
-						gt_detection_stats[file].remove(detection)
-						detection_count -= 1
-			print(f' detected gts {self.detected_ground_truths}')
-			gt_detection_df["Detected Labels"] = pd.Series(self.detected_ground_truths)
-			gt_detection_df["Undetected Labels"] = pd.Series(gt_detection_stats)
-
-			print(f'undetected ground truths: {detection_count}')
-			print(gt_detection_stats)
-			print(gt_detection_df)
-			gt_detection_df["Number Undetected"] = gt_detection_df["Undetected Labels"].str.len()
-
-			gt_detection_df.to_csv(f"{self.cache_path}_gt_detections.csv")
-
-			with open(f'{self.cache_path}gt_stats.txt', 'w') as f:
-				f.write(f'Total Ground Truth Count: {total_gt_count}, Total Undetected: {detection_count}, Total Detected: {total_gt_count-detection_count}, Percent Detected: {(total_gt_count-detection_count)/float(total_gt_count)}')
-
-		with open(f'{self.cache_path}depth_stats.txt', 'w') as f:
-			f.write(f'Bad point count: {bad_point_count}, good point count: {good_point_count}')
-
-
 		if self.config["our_method"].getboolean("use_our_method") and self.config['our_method'].getboolean('learn_representation') and self.config["our_method"].getboolean("KTH_dataset"):
-			train_learned_representation(self.learning_data, self.label_dict)
+			train_siamese_network(self.learning_data, cache_path=self.cache_path)
+		
 		if self.config["cache"].getboolean("images"):
-			print(df.head)
+			print(f"embeddings df {df.head}")
 			print(df.columns.tolist())
 			print(df["image_index"].dtypes)
 			df.to_csv(f"{self.cache_path}_embeddings.csv")
@@ -628,16 +603,19 @@ class NLMap():
 		elif self.config["embedding_type"].getboolean("only_pose"):
 			subset_columns = ['position_x', 'position_y','position_z']
 		elif self.config["embedding_type"].getboolean("learned"):
-			with open('cache/number_classes.txt') as f:
-				class_n = int(f.read())
-				print(class_n)
-			learned_model = LearnRepresentation(class_n)
-			learned_model.load_state_dict(torch.load("cache/learned_representation_model"))
+			# TODO: Use this if use classification network 
+			# I had this code here because the classification network needed to know number of classes
+			#with open('cache/number_classes.txt') as f:
+			#	class_n = int(f.read())
+			#	print(class_n)
+			learned_model = SiameseNetwork()
+			learned_model.load_state_dict(torch.load(f"{self.cache_path}learned_representation_model_3")) # TODO: How to choose which epoch model?
 			learned_model.eval()
 
 			for j in range(learned_model.representation_dim):
 				df[f"learned_{j}"]=np.nan
 
+			# convert row into learned representation from model
 			subset_columns = np.append(columns_emb_name, ['position_x', 'position_y','position_z'])
 			for idx,row in df[subset_columns].iterrows():
 				new_row = learned_model(torch.tensor([float(x) for x in row.tolist()]))
@@ -695,7 +673,7 @@ class NLMap():
 				plt.title("Clusters determined by DBSCAN")
 				# if not os.path.exists(self.figs_dir_path):
 				# 	os.makedirs(self.figs_dir_path)
-				plt.savefig(f"{self.figs_dir_path}/distances_{batch_number}.jpg", bbox_inches='tight')
+				plt.savefig(f"{self.figs_dir_path}/distances_batch:{batch_number}.jpg", bbox_inches='tight')
 				plt.close()
 			
 			clustering = DBSCAN(eps=epsilon, min_samples=samples).fit(objects_df) 
@@ -703,6 +681,8 @@ class NLMap():
 
 			# generating the cluster accuracy numbers
 			if self.config["our_method"].getboolean("use_our_method") and self.config["our_method"].getboolean("KTH_dataset"):
+				print(f"df is {df}")
+				print(f"image names subset {self.image_names[window_end_idx-window_size:window_end_idx]}")
 				gt_labels_input = [self.labels_to_ints[l] for l in df.loc[df['image_name'].isin(self.image_names[window_end_idx-window_size:window_end_idx])]['ground_truth_label_name'].tolist()]
 				# self.index_per_batch is a list containing the results of cluster_accuracy for each batch
 				self.index_per_batch.append(cluster_accuracy(gt_labels_input, clustering.labels_))
@@ -714,21 +694,31 @@ class NLMap():
 				cluster_number = int(row["cluster"])
 				# if cluster_number != -1: # removed this to see what counts as noise
 				crop_pil = PIL.Image.open(df.iloc[index]["pred_anno_idx"])
+
 				cluster_dir.mkdir(parents=True, exist_ok=True)
 				Path(os.path.join(cluster_dir, str(cluster_number))).mkdir(parents=True, exist_ok=True)
 				filename = df.iloc[index]["pred_anno_idx"].split("/")[-1]
 				# crop_pil.save(cluster_dir + "/" + str(cluster_number)+ "/" + filename)
-				crop_pil.save(os.path.join(cluster_dir, str(cluster_number), filename)) 
+				crop_pil.save(os.path.join(cluster_dir, str(cluster_number), filename))
+
+				# saving the combined depth&rgb image
+				if self.config["our_method"].getboolean("use_our_method") and not self.config["our_method"].getboolean("KTH_dataset"):
+					combined_crop_pil = PIL.Image.open(df.iloc[index]["pred_anno_idx"].replace(".jpeg", "_combined.jpeg"))
+					print(f"combined_crop_pilll {combined_crop_pil}")
+					print(f"_crop_pilll {crop_pil}")
+					combined_crop_pil.save(os.path.join(cluster_dir, str(cluster_number), filename.replace(".jpeg", "_combined.jpeg")))
 
 			cluster_count_df = objects_df.cluster.value_counts().to_frame()
 			if self.config["cache"].getboolean("images"):
 				# generating how many images are in each cluster, for each batch, and saves it to a csv
 				# this saves the cache items in the clusters folder instead of in the cache, to avoid having a lot of csvs in the cache
 
-				# TODO make less convoluted
+				# fixed: TODO make less convoluted
+				# fixed: TODO: delete this?
 				cluster_count_df.to_csv(f"{self.cache_path}_cluster.csv")
 				clusters_list = [pd.DataFrame([batch_number], columns=['Batch number']), cluster_count_df, batch_cluster_count_df]
 				batch_cluster_count_df = pd.concat(clusters_list)
+				#TODO: per_batch_cluster is redundant.
 				batch_cluster_count_df.to_csv(f"{self.cache_path}_per_batch_cluster_{embedding_type}_{samples}_{epsilon}.csv")
 				
 				# original code:
@@ -815,6 +805,74 @@ class NLMap():
 
 		################### end of clustering ##################
 		
+		################### saving statistics ##################
+		# getting the average number of clusters across all batches
+		cluster_count = 0
+		batch_count = 0
+		print(f"cluster dir {os.listdir(self.config['paths']['cluster_dir'])}")
+		for batch in os.listdir(self.config['paths']['cluster_dir']):
+			batch_count += 1
+			for cluster in os.listdir(os.path.join(self.config["paths"]["cluster_dir"], batch)):
+				if "-1" not in cluster and "html" not in cluster:
+					cluster_count += 1
+		if batch_count > 0:
+			average_cluster_per_batch = cluster_count/batch_count
+
+		if self.config["our_method"].getboolean("use_our_method") and self.config["our_method"].getboolean("KTH_dataset"):
+			# populating the dictionary where the keys are the ground truth text labels, and the values are the numbers assigned to each using label_encoder
+			# this dictionary is later used in measuring cluster accuracy
+			label_encoder = preprocessing.LabelEncoder() 
+			gt_labels = list(self.label_dict.keys())
+			labels = label_encoder.fit(gt_labels)
+			labels = label_encoder.transform(gt_labels)
+			print(f"labels are: {labels}")
+			i = 0
+			for gt in gt_labels:
+				self.labels_to_ints[gt] = labels[i]
+				i += 1
+
+			################## ground truth detection stats ################
+			gt_detection_df = pd.DataFrame(columns=["Image Path", "Ground Truth Labels", "Detected Labels", "Undetected Labels", "Number Undetected"], index=self.detected_ground_truths.keys())
+
+			gt_detection_stats = {}
+			detection_count = 0
+			for file in self.detected_ground_truths.keys():
+				gt = self.ground_truths[file]
+				gt_detection_stats[file] = set(range(len(gt)))
+				detection_count += len(gt_detection_stats[file])
+
+			total_gt_count = detection_count
+			gt_detection_df["Ground Truth Labels"] = pd.Series(copy.deepcopy(gt_detection_stats))
+
+			print(f'total ground truth count: {detection_count}')
+
+			for file, detections in self.detected_ground_truths.items():
+				for detection in detections:
+					if detection in gt_detection_stats[file]:
+						gt_detection_stats[file].remove(detection)
+						detection_count -= 1
+			print(f' detected gts {self.detected_ground_truths}')
+			gt_detection_df["Detected Labels"] = pd.Series(self.detected_ground_truths)
+			gt_detection_df["Undetected Labels"] = pd.Series(gt_detection_stats)
+
+			print(f'undetected ground truths: {detection_count}')
+			print(gt_detection_stats)
+			print(gt_detection_df)
+			gt_detection_df["Number Undetected"] = gt_detection_df["Undetected Labels"].str.len()
+
+			## Columns are: Image Path,Ground Truth Labels,Detected Labels,Undetected Labels,Number Undetected
+			## which ground truth labels our method finds and which it doesn't for each image
+			gt_detection_df.to_csv(f"{self.cache_path}_gt_detections.csv")
+
+			##TODO: Addressed in README.md why do we have this code here:
+			with open(f'{self.cache_path}_cluster_gt_stats.txt', 'w') as f:
+				f.write(f'Average number of clusters across all batches: {average_cluster_per_batch}, Total Ground Truth Count: {total_gt_count}, Total Undetected: {detection_count}, Total Detected: {total_gt_count-detection_count}, Percent Detected: {(total_gt_count-detection_count)/float(total_gt_count)}')
+
+		elif self.config["our_method"].getboolean("use_our_method"):
+			with open(f'{self.cache_path}_cluster_depth_stats.txt', 'w') as f:
+				f.write(f'Average number of clusters across all batches: {average_cluster_per_batch}, Bad point count: {self.bad_point_count}, good point count: {self.good_point_count}')
+
+
 	def compute_text_embeddings(self):
 		self.cache_text_exists = os.path.isfile(f"{self.cache_path}_text")
 		print(self.cache_text_exists)
@@ -912,22 +970,22 @@ class NLMap():
 				
 				#### Point cloud stuff
 				#### Just show CLIP for now!
-				file_num = int(top_k_item_clip[1][0].split("_")[1].split(".")[0])  ########## TODO this is the pose calculation
+				file_num = int(top_k_item_clip[1][0].split("_")[1].split(".")[0])  ## this is the pose calculation code
 				depth_img = pickle.load(open(f"{self.data_dir_path}/depth_{str(file_num)}","rb")) 
 				rotation_matrix = self.pose_dir[file_num]['rotation_matrix']
-				position = self.pose_dir[file_num]['position'] ############# TODO read from xml
+				position = self.pose_dir[file_num]['position']
 				## have if else for the code below. add a config variable
 
 				ymin, xmin, ymax, xmax = top_k_item_clip[1][3:]
 
 				center_y = int((ymin + ymax)/2.0)
 				center_x = int((xmin + xmax)/2.0)
-
+				print('is this running')
 				transformed_point,bad_point = pixel_to_vision_frame(center_y,center_x,depth_img,rotation_matrix,position)
 				side_pointx,_ = pixel_to_vision_frame_depth_provided(center_y,xmax,depth_img[center_y,center_x],rotation_matrix,position)
 				side_pointy,_ = pixel_to_vision_frame_depth_provided(ymax,center_x,depth_img[center_y,center_x],rotation_matrix,position)
 
-				#TODO: what should bb_size be for z? Right now, just making it same as x. Also needs to be axis aligned
+				#TODO: check with eric's code - what should bb_size be for z? Right now, just making it same as x. Also needs to be axis aligned
 				bb_sizex = np.linalg.norm(transformed_point-side_pointx)[0]*2
 				bb_sizey = np.linalg.norm(transformed_point-side_pointy)[0]*2
 				
@@ -952,7 +1010,7 @@ class NLMap():
 	def extract_3d_position(self, filename, xmin,xmax,ymin,ymax):
 		#### Point cloud stuff
 		#### Just show CLIP for now!
-		# file_num = int(filename.split("_")[1].split(".")[0])  ########## TODO this is the pose calculation
+		# file_num = int(filename.split("_")[1].split(".")[0])  ### this is the pose calculation for the robotics dataset
 		# depth_img = pickle.load(open(f"{self.data_dir_path}/depth_{str(file_num)}","rb")) 
 		file_num = f'{filename.split("_")[1]}_{filename.split("_")[2]}'.split(".")[0]
 		# print(f"filename {filename}")
@@ -965,7 +1023,7 @@ class NLMap():
 
 		print(f'is this the appropriate pose dict key? {filename.removeprefix("color_").removesuffix(".jpg")}')
 		rotation_matrix = self.pose_dir[filename.removeprefix("color_").removesuffix(".jpg")]['rotation_matrix'] 
-		position = self.pose_dir[filename.removeprefix("color_").removesuffix(".jpg")]['position'] ############# TODO read from xml
+		position = self.pose_dir[filename.removeprefix("color_").removesuffix(".jpg")]['position'] 
 		## have if else for the code below. add a config variable
 		# ymin, xmin, ymax, xmax = top_k_item_clip[1][3:]
 
@@ -976,14 +1034,14 @@ class NLMap():
 		side_pointx,_ = pixel_to_vision_frame_depth_provided(center_y,xmax,depth_img[center_y,center_x],rotation_matrix,position)
 		side_pointy,_ = pixel_to_vision_frame_depth_provided(ymax,center_x,depth_img[center_y,center_x],rotation_matrix,position)
 		print(f"bad point is {bad_point}")
-		#TODO: what should bb_size be for z? Right now, just making it same as x. Also needs to be axis aligned
+		#TODO: check eric's code what should bb_size be for z? Right now, just making it same as x. Also needs to be axis aligned
 		
-		# TODO CSV of filenames and 3d points
+		
 		if bad_point:
-			bad_point_count += 1
+			self.bad_point_count += 1
 			return [0.0, 0.0, 0.0]
 		
-		good_point_count += 1
+		self.good_point_count += 1
 		return transformed_point
 	
 	def go_to_and_pick_top_k(self, category_name):

@@ -28,10 +28,16 @@ class ContrastiveLoss(torch.nn.Module):
 
 class SiameseNetwork(nn.Module):
     def __init__(self, vild_dim=512, position_dim=3, representation_dim=256):
-        super(LearnRepresentation, self).__init__()
+        super(SiameseNetwork, self).__init__()
 
         self.model = nn.Sequential(
-            nn.Linear(vild_dim+position_dim, representation_dim)
+            nn.Linear(vild_dim+position_dim, representation_dim),
+            nn.ReLU(),
+            nn.Linear(representation_dim, representation_dim),
+            nn.ReLU(),
+            nn.Linear(representation_dim, representation_dim),
+            nn.ReLU(),
+            nn.Linear(representation_dim, representation_dim)
         )
         self.representation_dim = representation_dim
 
@@ -61,7 +67,7 @@ class LearnRepresentation(nn.Module):
             x = self.classify(x)
         return x
 
-def train_siamese_network(data, batch_size=32):
+def train_siamese_network(data, batch_size=32, n_epochs=5, cache_path='/cache'):
     data_len = min(250, len(data['label']))
 
     le = preprocessing.LabelEncoder()
@@ -70,13 +76,60 @@ def train_siamese_network(data, batch_size=32):
     print(le.classes_)
 
     paired_list = []
+    embeddings_1, embeddings_2, does_match = [],[],[]
 
     for i in range(data_len):
         for j in range(i+1, data_len):
             is_same_object = labels[i] == labels[j]
-            paired_list.append((data['vild'][i]+data['position'][i], data['vild'][j]+data['position'][j], is_same_object))
+            embeddings_1.append(data['vild'][i]+data['position'][i])
+            embeddings_2.append(data['vild'][j]+data['position'][j])
+            does_match.append(1 if is_same_object else 0)
 
-    print(paired_list)
+    dataset = utils.data.TensorDataset(torch.Tensor(embeddings_1), torch.Tensor(embeddings_2), torch.Tensor(does_match))
+    train_set, validate_set = utils.data.random_split(dataset, [.8, .2])
+    train, validate = utils.data.DataLoader(train_set, batch_size=batch_size, shuffle=True), utils.data.DataLoader(validate_set, batch_size=batch_size)
+
+    model = SiameseNetwork()
+    optimizer = torch.optim.Adam(model.parameters())
+    lossfn = ContrastiveLoss()
+
+            
+    losses = []
+    for epoch in range(n_epochs):
+        epoch_loss = 0
+        n_batches = 0
+        for batch_idx, sample in enumerate(train):
+            batch_emb_1, batch_emb_2, label = sample
+            optimizer.zero_grad()
+
+            model_1, model_2 = model(batch_emb_1), model(batch_emb_2)
+            loss = lossfn(model_1, model_2, label)
+
+            loss.backward()
+            optimizer.step()
+
+        for batch_idx, sample in enumerate(validate):
+            batch_emb_1, batch_emb_2, label = sample
+            with torch.no_grad():
+                model_1, model_2 = model(batch_emb_1), model(batch_emb_2)
+                loss = lossfn(model_1, model_2, label)
+                epoch_loss += float(loss)
+                n_batches += 1
+
+        losses.append(epoch_loss/n_batches)
+        
+        torch.save(model.state_dict(), cache_path+"learned_representation_model_"+str(epoch))
+
+    fig, ax1 = plt.subplots()
+
+    ax1.set_xlabel('Epoch')
+    ax1.set_ylabel('Validation Loss', color='tab:red')
+    ax1.plot(losses, color='tab:red')
+    ax1.tick_params(axis='y', labelcolor='tab:red')
+
+    fig.tight_layout()
+    plt.savefig(cache_path+"siamese_loss_curve.png")
+
 
 def train_learned_representation(data, label_dict, n_epochs=30, batch_size=32, cache_path='cache/'):
     data_len = min(250, len(data['label']))

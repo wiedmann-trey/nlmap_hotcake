@@ -131,14 +131,51 @@ questions:
 2. is anything being done on nlmap_huda branch?
 3. 
 
-(add when to run spot.ini)
+(add when to run spot.ini) -- comment from huda: spot.ini just has the toggles different
+If you wish to run data collected using spot, make sure that "KTH_dataset" is False in the config file
 
 # configs 
 learn_representation = False 
 
 # Outputs
 
-Per run, a CSV with clustering results, including a tuple of the ground truth and gt position for each crop, saved in /nlmap_hotcake/cluster_gt_csvs
+Generated for any data input:
+    ./cluster_gt_csvs_kosher/f'cluster_gts_{embedding_type}_eps:{eps}_samples:{samples}_window:{config["our_method"].getint("window_size")}_step:{config["our_method"].getint("window_step")}.csv':
+        columns: batch and cluster number, number of crops in cluster, frequency per object in cluster, ground truth objects
+        Generated each time clusters are generated, a CSV with clustering results, including a tuple of the ground truth and its position for each crop
+
+    f'./cluster_gt_csvs_kosher/batch_images_window:{config["our_method"].getint("window_size")}_step:{config["our_method"].getint("window_step")}_max_images:{config["our_method"].getint("max_images")}.csv':
+        columns: batch number, images in batch
+        Generated each time clusters are generated, a CSV containing the list of images that are in each batch. This can help with going back to manually check how images affect performance in different batches
+    
+    f'{self.cache_dir}_cluster.csv': 
+        a CSV containing how many images are in each cluster, but only for the last batch that was run. This information is redundant because it is available in the larger CSV with path ./cluster_gt_csvs_kosher/f'cluster_gts_{embedding_type}_eps:{eps}_samples:{samples}_window:{config["our_method"].getint("window_size")}_step:{config["our_method"].getint("window_step")}.csv'
+
+    f"{self.cache_path}_embeddings.csv": saved in the cache, a csv containing the embeddings for each crop (bounding box) and information associated with it 
+
+Generated only when running on KTH dataset:
+    f'{self.cache_path}_cluster_gt_stats.txt':
+        A text file containing the average number of clusters across all batches, and information about detected and undetected ground truths. Helpful when testing hyperparameters such as the max and min bounding box size for the object detector
+
+    index_results.csv:
+        Appended to each time clusters are generated, a CSV file containing several accuracy metrics to measure how accurate the generated clusters are
+
+    f"{self.cache_path}_gt_detections.csv":
+        Trey -- add
+
+
+Generated only when running on spot data:
+    f'{self.cache_path}_cluster_depth_stats.txt':
+        A text file containing the average number of clusters across all batches, and counts for "bad points" and "good points". A bad point occurs when there is no depth information for a bounding box, which results in no pose information.
+
+
+
+
+
+Need to delete:
+/home/ifrah/longterm_semantic_map/nlmap_hotcake/cache/combined_moving_static_KTH_cluster.csv -- contains information for the last batch only -- 
+
+
 f"{cache_path}_per_batch_cluster_{embedding_type}_{samples}_{eps}.csv": a csv with the batch number and how many images are in each cluster. But the csv is messy and hard to read. It is used in the save_clusters_gts helper method
 
 

@@ -206,6 +206,32 @@ def pixel_to_vision_frame(i,j,depth_img,rotation_matrix,position):
 
 
 	z_RGB = depth_img[i,j]
+        
+    #### modification
+    ### this looks at the pixels surrounding the center pixel and gets an average of the depth. This helps when the depth image is pixelated 
+	print(f'z rgb {z_RGB}')
+	if z_RGB == 0:
+		z_RGBs = []
+        # looping over points in a box around the center pixel (the i,j input)
+		for height in range(-20, 20):
+			for width in range(-20, 20):
+				if i + height < len(depth_img) and j + width < len(depth_img[0]):
+					print(f"depth image {depth_img}")
+					print(f"depth width: {len(depth_img[0])} depth height {len(depth_img)}")
+					print(f"height {height}")
+					print(f"i+height {i+height}")
+					# print(f'is this 0 {depth_img[i+height,j+width]}')
+					if depth_img[i+height,j+width] > 0:
+						try:
+							print(f'depth pixel {depth_img[i+height,j+width]}')
+							z_RGBs.append(depth_img[i+height,j+width])
+						except:
+							continue
+		if len(z_RGBs) > 0:
+			print(f"z_RGBs {z_RGBs}")
+			z_RGB = sum(z_RGBs)/len(z_RGBs)
+    ##### end of modification
+
 	x_RGB = (j - CX) * z_RGB / FX
 	y_RGB = (i - CY) * z_RGB / FY
 

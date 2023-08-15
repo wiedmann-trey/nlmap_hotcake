@@ -61,6 +61,8 @@ def main(argv):
     #We only use the hand color
     sources = ['hand_depth_in_hand_color_frame', 'hand_color_image']
 
+    start_time = time.time()
+
     # Create robot object with an image client.
     sdk = bosdyn.client.create_standard_sdk('image_depth_plus_visual')
     robot = sdk.create_robot(options.hostname)
@@ -81,6 +83,8 @@ def main(argv):
         image_responses = image_client.get_image_from_sources(sources)
         
         curr_time = datetime.utcnow().strftime('%Y-%m-%d-%H-%M-%S_%f')
+        elapsed_time = time.time() - start_time
+        print(f"Elapsed time (sec): {int(elapsed_time)}")
         if robot_pose:
             frame_tree_snapshot = robot.get_frame_tree_snapshot()
             vision_tform_hand = get_a_tform_b(frame_tree_snapshot,"vision","hand")

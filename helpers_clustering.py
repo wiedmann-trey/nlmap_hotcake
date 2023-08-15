@@ -11,6 +11,7 @@ import os
 import pandas as pd
 import configparser
 import csv
+from collections import Counter
 
 def cluster_accuracy(labels_gt, labels_pred):
     
@@ -34,7 +35,6 @@ def cluster_accuracy(labels_gt, labels_pred):
 				continue
 			adjusted_for_noise.append(index)
 		labels_pred = adjusted_for_noise
-		print(f"labels pred: {labels_pred}")
 
 		# generating the different accuracy measures		
 		RI = rand_score(labels_gt, labels_pred)
@@ -54,7 +54,7 @@ def save_clusters_gts(config, cache_path, embedding_type, eps, samples, image_li
 		# add the position_x,position_y,position_z to each gt. so maybe do if only_pose save (gt_name, position_x,position_y,position_z)
 
 		print(cache_path, embedding_type, eps, samples)
-		df = pd.DataFrame(columns=["batch and cluster number", "number of crops in cluster", "gt objects"])
+		df = pd.DataFrame(columns=["batch and cluster number", "number of crops in cluster", "frequency per object in cluster", "ground truth objects"])
 		# df = pd.DataFrame()
 		embeddings_df = pd.read_csv(f"{cache_path}_embeddings.csv",  dtype={'image_index': 'object'}, index_col=0)
 
@@ -68,7 +68,7 @@ def save_clusters_gts(config, cache_path, embedding_type, eps, samples, image_li
 		step = config['our_method'].getint('window_step')
 		window_size = config['our_method'].getint('window_size')
 
-		############### generating the csv when using the KTH dataset 
+		############### generating the per batch csv 
 		# if config["our_method"].getboolean("KTH_dataset"):
 		# myFilePath = f"{cache_path}_per_batch_cluster_{embedding_type}_{samples}_{eps}.csv"
 		# print(f'cache path {myFilePath}')
@@ -85,59 +85,65 @@ def save_clusters_gts(config, cache_path, embedding_type, eps, samples, image_li
 		# 	average_cluster_per_batch = n_rows - 2
 		# df.loc[len(df.index)] = ["average_number_of_clusters", average_cluster_per_batch, None]
 
+		# get average number of clusters per batch
+		cluster_count = 0
+		batch_count = 0
+		for batch in os.listdir(config["paths"]["cluster_dir"]):
+			batch_count += 1
+			for cluster in os.listdir(os.path.join(config["paths"]["cluster_dir"], batch)):
+				cluster_count += 1
+		average_cluster_per_batch = cluster_count/batch_count
+		# print(f'len1 {len(df.index)}')
+		# df.loc[len(df.index)] = [f"average number of clusters across all batches is {average_cluster_per_batch}", None, None, None]
+
 		# generating the list of ground truth objects and their locations
 		for batch in sorted_nicely(os.listdir(config["paths"]["cluster_dir"])):
-			print(f'inside loop')
-			batch_number = int(batch[-1])
-			batch_images = image_list[step * batch_number : step * batch_number + window_size]
-			df.loc[len(df.index)] = [f"{batch}_images", batch_images, None]
 			for cluster in sorted_nicely(os.listdir(os.path.join(config["paths"]["cluster_dir"], batch))):
-				print(f'cluster number {cluster}')
 				object_gts = []
 				if ".html" in cluster:
 					continue
-				# print(f'is this path for cluster wrong {str(os.path.join(config["paths"]["cluster_dir"], batch, cluster))}')
 				for crop in sorted_nicely(os.listdir((os.path.join(config["paths"]["cluster_dir"], batch, cluster)))):
-					subset_df = embeddings_df[embeddings_df['pred_anno_idx'] == f"{config['paths']['cache_dir']}/{crop}"]
-					
-					x_df = subset_df['position_x']	
-					y_df = subset_df['position_y']	
-					z_df = subset_df['position_z']	
-					# print(f'x  df {x_df}')
-					x = x_df.iloc[0]
-					y = y_df.iloc[0]
-					z = z_df.iloc[0]
+					if "combined" not in crop:
+						subset_df = embeddings_df[embeddings_df['pred_anno_idx'] == f"{config['paths']['cache_dir']}/{crop}"]
+						x_df = subset_df['position_x']	
+						y_df = subset_df['position_y']	
+						z_df = subset_df['position_z']	
+						x = x_df.iloc[0]
+						y = y_df.iloc[0]
+						z = z_df.iloc[0]
 
-					if config["our_method"].getboolean("KTH_dataset"):
-						print('getting ground truth label')
-						gt_df = subset_df['ground_truth_label_name']	
-						gt_label = gt_df.iloc[0]
-						print(f"gt df {gt_df}")
-						object_gts.append((gt_label, x, y, z))
-					else:
-						print(f'crop for spot: {crop}')
-						object_gts.append((crop, x, y, z))
+						if config["our_method"].getboolean("KTH_dataset"):
+							gt_df = subset_df['ground_truth_label_name']	
+							gt_label = gt_df.iloc[0]
+							object_gts.append((gt_label, x, y, z, subset_df['pred_anno_idx']))
+						else:
+							object_gts.append((crop, x, y, z))
 
+				object_names = [str(x[0]) for x in object_gts]
 				cluster_name = f"{batch}_cluster_{cluster}"
-				df.loc[len(df.index)] = [cluster_name, len(os.listdir(os.path.join(config["paths"]["cluster_dir"], batch, cluster))), set(object_gts)]
 
-		cluster_count = 0
-		batch_count = 0
-		# get average number of clusters per batch
+				images_in_cluster = os.listdir(os.path.join(config["paths"]["cluster_dir"], batch, cluster))
+
+				# avoids double counting combined depth/rgb images
+				if not config["our_method"].getboolean("KTH_dataset"):
+					images_in_cluster = [x for x in images_in_cluster if "color" in x]
+
+				df.loc[len(df.index)] = [cluster_name, len(images_in_cluster), Counter(object_names), object_gts]
+
+		# creating dataframe with list of images in each batch
+		batch_df = pd.DataFrame(columns=["batch number", "images in batch"])
 		for batch in sorted_nicely(os.listdir(config["paths"]["cluster_dir"])):
-			batch_count += 1
-			for cluster in sorted_nicely(os.listdir(os.path.join(config["paths"]["cluster_dir"], batch))):
-				cluster_count += 1
-		
-		average_cluster_per_batch = cluster_count/batch_count
-		df.loc[0] = ["average_number_of_clusters", average_cluster_per_batch, None]
-
+			batch_number = int(batch[-1])
+			batch_images = image_list[step * batch_number : step * batch_number + window_size]
+			batch_df.loc[len(batch_df.index)] = [f"{batch}", batch_images]
+	
+		# saving the dataframes to csvs
 		if config["our_method"].getboolean("KTH_dataset"):
-			print('is it saving')
-			print(f'are these the gts {os.listdir("./cluster_gt_csvs_kosher")}')
 			df.to_csv(f'./cluster_gt_csvs_kosher/cluster_gts_{embedding_type}_eps:{eps}_samples:{samples}_window:{config["our_method"].getint("window_size")}_step:{config["our_method"].getint("window_step")}.csv')
+			batch_df.to_csv(f'./cluster_gt_csvs_kosher/batch_images_window:{config["our_method"].getint("window_size")}_step:{config["our_method"].getint("window_step")}_max_images:{config["our_method"].getint("max_images")}.csv')
 		else:
 			df.to_csv(f'./cluster_csvs_spot/spot_cluster_gts_data:{config["dir_names"]["data"]}_{embedding_type}_eps:{eps}_samples:{samples}_window:{config["our_method"].getint("window_size")}_step:{config["our_method"].getint("window_step")}.csv')
+			batch_df.to_csv(f'./cluster_csvs_spot/batch_images:{config["dir_names"]["data"]}_window:{config["our_method"].getint("window_size")}_step:{config["our_method"].getint("window_step")}_max_images:{config["our_method"].getint("max_images")}.csv')
 		
 
 
