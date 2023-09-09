@@ -178,4 +178,21 @@ Need to delete:
 
 f"{cache_path}_per_batch_cluster_{embedding_type}_{samples}_{eps}.csv": a csv with the batch number and how many images are in each cluster. But the csv is messy and hard to read. It is used in the save_clusters_gts helper method
 
+## Images to Video 
+To make a folder containing images to video follow these steps
 
+1. Change the image folder location in `image_to_video.py` file located in `spot_utils` folder. 
+2. Run the script using `python image_to_video.py` command. It will generate the video 
+
+## Generate pointcloud 
+As of Sep 9, 2023 generate pointcloud works only if the cache folder exists for that data. So follow these steps - 
+1. Make sure `cache` exists for the dataset in `NLMAP_HOTCAKE` root folder
+2. Activate conda environmnt by running `conda activate nlmap_eric_env`
+3. Change the `spot.ini` file in `configs` folder to point to correct data folder
+4. Run `python nlmap.py --config ./configs/spot.ini` to run the whole process and generate point cloud
+5. As it takes a lot of time, you might want to run this as detached/background mode. To do that run 
+```
+nohup python -u nlmap.py --config ./configs/spot.ini &
+```
+
+It will also create `nohup.out` file to see the output. And that `-u` flag will also update the file live with print statements in code. 
