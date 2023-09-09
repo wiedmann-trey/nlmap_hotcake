@@ -18,6 +18,7 @@ def images_to_video(image_folder, output_filename, fps):
     video.release()
 
 # Path to image folder
+# [TODO] Change this to make absolute path
 image_folder = '2023-06-27-scan-1'
 output_filename = image_folder + '_video.mp4'
 
