@@ -1,0 +1,25 @@
+2023-09-06 11:12:42.642298: I tensorflow/core/platform/cpu_feature_guard.cc:193] This TensorFlow binary is optimized with oneAPI Deep Neural Network Library (oneDNN) to use the following CPU instructions in performance-critical operations:  SSE4.1 SSE4.2 AVX AVX2 FMA
+To enable them in other operations, rebuild TensorFlow with the appropriate compiler flags.
+False
+Building text embeddings...
+  0%|          | 0/3 [00:00<?, ?it/s] 33%|███▎      | 1/3 [00:00<00:00,  2.62it/s]100%|██████████| 3/3 [00:00<00:00,  7.26it/s]
+gts {}
+2023-09-06 11:12:56.941692: I tensorflow/core/platform/cpu_feature_guard.cc:193] This TensorFlow binary is optimized with oneAPI Deep Neural Network Library (oneDNN) to use the following CPU instructions in performance-critical operations:  SSE4.1 SSE4.2 AVX AVX2 FMA
+To enable them in other operations, rebuild TensorFlow with the appropriate compiler flags.
+2023-09-06 11:12:56.944050: I tensorflow/core/common_runtime/process_util.cc:146] Creating new thread pool with default inter op setting: 2. Tune using inter_op_parallelism_threads for best performance.
+WARNING:tensorflow:From /home/ifrah/longterm_semantic_map/nlmap_dev_ani/nlmap_hotcake/nlmap.py:306: load (from tensorflow.python.saved_model.loader_impl) is deprecated and will be removed in a future version.
+Instructions for updating:
+This function will only be available through the v1 compatibility library as tf.compat.v1.saved_model.loader.load or tf.compat.v1.saved_model.load. There will be a new function for importing SavedModels in Tensorflow 2.0.
+2023-09-06 11:12:57.918728: I tensorflow/compiler/mlir/mlir_graph_optimization_pass.cc:354] MLIR V1 optimization pass is not enabled
+Computing image embeddings
+  0%|          | 0/300 [00:00<?, ?it/s]0
+original name: ./cache_2023-07-18-scan-1/2023-07-18-scan-1_2023-07-18-scan-1_color_2023-07-18-22-58-05_649589.jpg_crop_0.jpeg
+  0%|          | 0/300 [00:04<?, ?it/s]
+Traceback (most recent call last):
+  File "/home/ifrah/longterm_semantic_map/nlmap_dev_ani/nlmap_hotcake/nlmap.py", line 1134, in <module>
+    nlmap = NLMap(args.config_path, tol=args.tol, bb_num=args.bbnum)
+  File "/home/ifrah/longterm_semantic_map/nlmap_dev_ani/nlmap_hotcake/nlmap.py", line 453, in __init__
+    crop_pil.save(crop_fname)
+  File "/home/ifrah/anaconda3/envs/nlmap_eric_env/lib/python3.9/site-packages/PIL/Image.py", line 2350, in save
+    fp = builtins.open(filename, "w+b")
+FileNotFoundError: [Errno 2] No such file or directory: './cache_2023-07-18-scan-1/2023-07-18-scan-1_2023-07-18-scan-1_color_2023-07-18-22-58-05_649589.jpg_crop_0.jpeg'
