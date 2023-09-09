@@ -547,7 +547,7 @@ class NLMap():
 						bbox = rescaled_detection_boxes[anno_idx]
 						y1, x1, y2, x2 = int(np.floor(bbox[0])), int(np.floor(bbox[1])), int(np.ceil(bbox[2])), int(np.ceil(bbox[3]))
 						_3d_poisiton = self.extract_3d_position(image_name, x1,x2,y1,y2)
-						print(f"crop name: {crop_fname} ////////////////// extracted 3d pos: {_3d_poisiton}")
+						print(f"crop name: {crop_fname} ////////////////// extracted 3d pos: {_3d_poisiton}") # <<<< This is point
 						
 						embedding = np.append(_3d_poisiton, [y1, x1, y2, x2 ])
 						embedding = np.append(embedding, [image_name])
@@ -593,7 +593,10 @@ class NLMap():
 			print(df["image_index"].dtypes)
 			df.to_csv(f"{self.cache_path}_embeddings.csv")
 			print("done with storing cache of embedding is done")	
-			
+		
+		# [ANIRUDHA] Stopping before clustering 
+		return
+		# <<<<<<<< CONTINUE FROM HERE >>>>>>>>>>>
 		print("clustering starts")
 		print(df.columns)
 
