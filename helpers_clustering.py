@@ -103,21 +103,24 @@ def save_clusters_gts(config, cache_path, embedding_type, eps, samples, image_li
 				if ".html" in cluster:
 					continue
 				for crop in sorted_nicely(os.listdir((os.path.join(config["paths"]["cluster_dir"], batch, cluster)))):
-					if "combined" not in crop:
-						subset_df = embeddings_df[embeddings_df['pred_anno_idx'] == f"{config['paths']['cache_dir']}/{crop}"]
-						x_df = subset_df['position_x']	
-						y_df = subset_df['position_y']	
-						z_df = subset_df['position_z']	
-						x = x_df.iloc[0]
-						y = y_df.iloc[0]
-						z = z_df.iloc[0]
+					# if "combined" not in crop:
+					crop_fname = name = f"{config['paths']['cache_dir']}/{crop}" 
+					if not config["our_method"].getboolean("KTH_dataset"):
+						stripped = crop_fname.strip(".jpeg")+".jpeg"
+					subset_df = embeddings_df[embeddings_df['pred_anno_idx'] == f"{config['paths']['cache_dir']}/{crop}"]
+					x_df = subset_df['position_x']	
+					y_df = subset_df['position_y']	
+					z_df = subset_df['position_z']	
+					x = x_df.iloc[0]
+					y = y_df.iloc[0]
+					z = z_df.iloc[0]
 
-						if config["our_method"].getboolean("KTH_dataset"):
-							gt_df = subset_df['ground_truth_label_name']	
-							gt_label = gt_df.iloc[0]
-							object_gts.append((gt_label, x, y, z, subset_df['pred_anno_idx']))
-						else:
-							object_gts.append((crop, x, y, z))
+					if config["our_method"].getboolean("KTH_dataset"):
+						gt_df = subset_df['ground_truth_label_name']	
+						gt_label = gt_df.iloc[0]
+						object_gts.append((gt_label, x, y, z, subset_df['pred_anno_idx']))
+					else:
+						object_gts.append((crop, x, y, z))
 
 				object_names = [str(x[0]) for x in object_gts]
 				cluster_name = f"{batch}_cluster_{cluster}"
@@ -145,7 +148,8 @@ def save_clusters_gts(config, cache_path, embedding_type, eps, samples, image_li
 			df.to_csv(f'./cluster_csvs_spot/spot_cluster_gts_data:{config["dir_names"]["data"]}_{embedding_type}_eps:{eps}_samples:{samples}_window:{config["our_method"].getint("window_size")}_step:{config["our_method"].getint("window_step")}.csv')
 			batch_df.to_csv(f'./cluster_csvs_spot/batch_images:{config["dir_names"]["data"]}_window:{config["our_method"].getint("window_size")}_step:{config["our_method"].getint("window_step")}_max_images:{config["our_method"].getint("max_images")}.csv')
 		
-
+		print("end of populating gts")
+		exit()
 
 def sorted_nicely(l): 
     """ 

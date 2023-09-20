@@ -267,7 +267,8 @@ class NLMap():
 		if self.config["our_method"].getboolean("KTH_dataset"):
 		    ## ground truth overlap is how much the predicted crop overlaps with ground truth box
 			##column stores information for each detected groundtruth (crop >  threshold)
-			columns = ["ground_truth_overlap", 'position_x', 'position_y','position_z', 'position_?', "bounding_box_y1","bounding_box_x1",  "bounding_box_y2","bounding_box_x2", "image_name", 'image_index',"pred_anno_idx", 'ground_truth_label_name', 'ground_truth_anno_idx', "ground_truth_bounding_box_y1","ground_truth_bounding_box_x1",  "ground_truth_bounding_box_y2","ground_truth_bounding_box_x2"]
+			columns = ["ground_truth_overlap", 'position_x', 'position_y','position_z', 'position_?', "bounding_box_y1","bounding_box_x1",  "bounding_box_y2","bounding_box_x2", "image_name", 'image_index',"pred_anno_idx", \
+					 'ground_truth_label_name', 'ground_truth_anno_idx', "ground_truth_bounding_box_y1","ground_truth_bounding_box_x1",  "ground_truth_bounding_box_y2","ground_truth_bounding_box_x2"] #pred_anno_idx is crop_fname
 		else: # using spot data
 			columns = ['position_x', 'position_y','position_z', "bounding_box_y1","bounding_box_x1",  "bounding_box_y2","bounding_box_x2", "image_name", 'image_index',"pred_anno_idx"]
 		columns_emb_name = [f"vild_embedding_{i}" for i in range(FEAT_SIZE)]
@@ -592,7 +593,8 @@ class NLMap():
 			print(df.columns.tolist())
 			print(df["image_index"].dtypes)
 			df.to_csv(f"{self.cache_path}_embeddings.csv")
-			print("done with storing cache of embedding is done")	
+			print("done with storing cache of embedding is done")
+			## TODO: save in the df the visual emb not the fused embedding	
 			
 		print("clustering starts")
 		print(df.columns)
@@ -654,6 +656,7 @@ class NLMap():
 		# loop through images with a sliding window
 		print(f"self images {self.image_names}")
 		for window_end_idx in range(window_size, last_image, window_step):
+			print(f"performing clustering over images for batch {batch_number}")
 			objects_df = df.loc[df['image_name'].isin(self.image_names[window_end_idx-window_size:window_end_idx])]
 			# print(f"images for batch {batch_number} are {self.image_names[window_end_idx-window_size:window_end_idx]}")
 			# print(df.shape)
@@ -671,6 +674,8 @@ class NLMap():
 				distances = distances[:,1]
 				plt.plot(distances) # eps is on the y axis
 				plt.title("Clusters determined by DBSCAN")
+				plt.xlabel("Num Samples")
+				plt.ylabel("k Epsilon Distance")
 				# if not os.path.exists(self.figs_dir_path):
 				# 	os.makedirs(self.figs_dir_path)
 				plt.savefig(f"{self.figs_dir_path}/distances_batch:{batch_number}.jpg", bbox_inches='tight')
@@ -734,7 +739,7 @@ class NLMap():
 					objects_df["ground_truth_anno_idx"] = df["ground_truth_anno_idx"]
 				
 			if self.config["our_method"].getboolean("KTH_dataset"):
-				fig = px.scatter(objects_df, x="x_component", y="y_component", hover_data=["cluster", "ground_truth_anno_idx"], color = "image_index")
+				fig = px.scatter(objects_df, x="x_component", y="y_component", hover_data=["cluster", "ground_truth_anno_idx"], color = "cluster")
 				fig.update_layout(
 				height=800)
 			else:
@@ -790,6 +795,9 @@ class NLMap():
 			# "adjusted index_per_batch": ARI}
 
 			with open('index_results.csv', 'a') as csv_file:
+				print("printing to index_results")
+				print("epsilon", epsilon)
+				print("min_samples", samples)
 				dict_object = csv.DictWriter(csv_file, fieldnames=field_names) 
 				dict_object.writerow(results_dict) 
 

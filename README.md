@@ -161,7 +161,15 @@ Generated only when running on KTH dataset:
         Appended to each time clusters are generated, a CSV file containing several accuracy metrics to measure how accurate the generated clusters are
 
     f"{self.cache_path}_gt_detections.csv":
-        Trey -- add
+        For each RGB photo in the data set:
+            'Image Path' - path to the photo
+            'Ground Truth Labels' - indexes of all the ground truth labels contained in the photo
+            'Detected Labels' - labels that were detected by our method
+            'Undetected Labels' - labels that were not detected by our method
+            'Number Undetected' - count of labels that were not detected by our method
+
+    f"cluster_gt_csvs_destinations"
+        This file maintains the list of images along with the gt objects and their positions in each batch and cluster
 
 
 Generated only when running on spot data:
