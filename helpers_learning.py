@@ -68,7 +68,8 @@ class LearnRepresentation(nn.Module):
         return x
 
 def train_siamese_network(data, batch_size=32, n_epochs=5, cache_path='/cache'):
-    data_len = min(250, len(data['label']))
+    # uncomment when training on just 250 images data_len = min(250, len(data['label']))
+    data_len = len(data['label'])
 
     le = preprocessing.LabelEncoder()
     labels = torch.Tensor(le.fit_transform(data["label"][:data_len])).long()

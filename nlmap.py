@@ -62,6 +62,7 @@ import pandas as pd
 from sklearn.manifold import TSNE
 import plotly.express as px
 from sklearn.neighbors import NearestNeighbors
+from sklearn.metrics.pairwise import cosine_similarity #janeth
 
 from pathlib import Path
 import PIL.Image
@@ -206,7 +207,7 @@ class NLMap():
         # dictionary from image name to a list of tuples containing the ground truth label, bounding box coordinates, and centroid of object
         # the the extract pose function uses this dictionary to find a matching image name and a matching bbox for the inputs. If it matches, return the centroid
 
-
+		query_datastructure = {}
 		if self.config["our_method"].getboolean("use_our_method"):
 			label_num = 0
 			for filename in os.listdir(self.data_dir_path):
@@ -216,6 +217,8 @@ class NLMap():
 
 				# populating the ground truth dictionary for each image
 				if self.config["our_method"].getboolean("KTH_dataset"):
+					# import pdb
+					# pdb.set_trace()
 					if ".jpg" in filename and "label" not in filename:
 						label_names = [label for label in os.listdir(self.data_dir_path) \
 									if ((filename[0:end_index] in str(label)) and ".jpg" in str(label) and "label" in str(label))]
@@ -239,17 +242,27 @@ class NLMap():
 								self.label_dict[root.attrib["label"]] = label_num
 								label_num += 1
 
+							searchable_filename = filename.split(".")
+							searchable_filename = "".join([searchable_filename[0],"_label_",str( label_idx),"." ,searchable_filename[1]])
+							# print(searchable_filename)
+							# exit()
 							if filename not in self.ground_truths:
 								self.ground_truths[filename] = []
 							if "2014" in label_name: 
 								self.ground_truths[filename].append((root.attrib["label"], [rmin, rmax, cmin, cmax], [float(i) for i in root[0].text.split(" ")], label_idx))
+								query_datastructure[filename+"_"+str( label_idx)] = (root.attrib["label"], [rmin, rmax, cmin, cmax])
 							if "2016" in label_name or "2015" in label_name:
 								self.ground_truths[filename].append((root.attrib["label"], [rmin, rmax, cmin, cmax], [float(i) for i in root[2].text.split(" ")], label_idx))
+								query_datastructure[filename+"_"+str( label_idx)] = (root.attrib["label"], [rmin, rmax, cmin, cmax])
 							i += 1
 				
 			print(f"gts {self.ground_truths}")
 			# print(self.object_image_list)
 
+			## export the groundtruth dict as csv
+			pd.DataFrame.from_dict(data = self.ground_truths, orient = 'index').to_csv('ground_truth.csv', header = False)
+			pd.DataFrame.from_dict(data = query_datastructure, orient = 'index').to_csv('query_ground_truth.csv', header = False)
+			# exit()
 		if self.config["our_method"].getboolean("use_our_method") and self.config["our_method"].getboolean("KTH_dataset"):
 			# populating the dictionary where the keys are the ground truth text labels, and the values are the numbers assigned to each using label_encoder
 			# this dictionary is later used in measuring cluster accuracy
@@ -324,6 +337,9 @@ class NLMap():
 
 			# loop all dataset images
 			for image_name in tqdm(self.image_names):
+				'''import pdb
+				pdb.set_trace()'''
+				# exit()
 				if "label" in image_name:
 					continue
 				print(count)
@@ -393,8 +409,8 @@ class NLMap():
 								min_score_thresh=self.config["vild"].getfloat("min_rpn_score_thresh"),
 								skip_scores=False,
 								skip_labels=True)
-						except:
-							print(f"image erroring: {image_name}")
+						except Exception as Error:
+							print(f"image erroring: {image_name}, error is: {Error}")
 
 
 					plt.figure(figsize=overall_fig_size)
@@ -418,6 +434,7 @@ class NLMap():
 
 				### Go through the top crops (baseline) or all crops (our_method)
 				for anno_idx in indices[0:int(n_boxes)]:
+					print("Iterating over annotation boxes")
 					# continue
 					rpn_score = detection_roi_scores[anno_idx]
 					bbox = rescaled_detection_boxes[anno_idx]
@@ -428,7 +445,10 @@ class NLMap():
 					crop = np.copy(raw_image[y1:y2, x1:x2, :])
 					
 					# getting a crop of the combined depth and rgb image
+					print(self.config['our_method'].getboolean('use_our_method'))
+					print(self.config["our_method"].getboolean("KTH_dataset"))
 					if self.config['our_method'].getboolean('use_our_method') and not self.config["our_method"].getboolean("KTH_dataset"):
+						print("Iterating over annotation boxes")
 						combined_image_path = image_path.replace('color', 'combined')
 						combined_image = imread(combined_image_path)
 						raw_combined_image = np.array(combined_image)
@@ -437,8 +457,10 @@ class NLMap():
 					### Add crop to priority queue for ranking scores for VILD
 						
 					### Run CLIP vision model on crop
+					# print(combined_crop)
 					crop_pil = Image.fromarray(crop)
-					combined_crop_pil = Image.fromarray(combined_crop)
+					if self.config['our_method'].getboolean('use_our_method') and not self.config["our_method"].getboolean("KTH_dataset"):
+						combined_crop_pil = Image.fromarray(combined_crop)
 
 					#if (cache image does not exist), process the data
 					if (not self.cache_image_exists):
@@ -452,7 +474,8 @@ class NLMap():
 						# combined_moving_static_KTH_combined_moving_static_KTH_20140820_patrol_run_2_room_1_rgb_0008.jpg_crop_3
 
 						crop_pil.save(crop_fname)
-						combined_crop_pil.save(combined_crop_fname)
+						if self.config['our_method'].getboolean('use_our_method') and not self.config["our_method"].getboolean("KTH_dataset"):
+							combined_crop_pil.save(combined_crop_fname)
 
 						crop_back = Image.open(crop_fname)
 						if self.config["our_method"].getboolean("use_clip"):
@@ -486,7 +509,7 @@ class NLMap():
 				if self.config["our_method"].getboolean("KTH_dataset") and image_name not in self.detected_ground_truths:
 					self.detected_ground_truths[image_name] = set()
 
-				print(f'hereeee')
+				# print(f'hereeee')
 				if self.config["our_method"].getboolean("use_our_method") and self.config["our_method"].getboolean("KTH_dataset"):
 					# keep track of crops already assigned a ground truth
 					assigned_crops = set()
@@ -600,7 +623,10 @@ class NLMap():
 		print(df.columns)
 
 		# configs for what kind of embedding to use
-		if self.config["embedding_type"].getboolean("vild_and_pose"):
+		if self.config["embedding_type"].getboolean("vild"):
+			subset_columns = columns_emb_name
+			# np.append(columns_emb_name, ['position_x', 'position_y','position_z'])
+		elif self.config["embedding_type"].getboolean("vild_and_pose"):
 			subset_columns = np.append(columns_emb_name, ['position_x', 'position_y','position_z'])
 		elif self.config["embedding_type"].getboolean("only_pose"):
 			subset_columns = ['position_x', 'position_y','position_z']
@@ -629,9 +655,9 @@ class NLMap():
 		window_step = int(self.config['our_method']['window_step'])
 		batch_number = 0
 
-		print(f"window size{window_size}")
-		print(f"window step {window_step}")
-		print(f"number images {len(self.image_names)}")
+		# print(f"window size{window_size}")
+		# print(f"window step {window_step}")
+		# print(f"number images {len(self.image_names)}")
 		
 		## finding the index of the last image to run clustering on
 		if int(self.config['our_method']['max_images']) > len(self.image_names):
@@ -645,17 +671,25 @@ class NLMap():
 			embedding_type = "vild_and_pose"
 		elif self.config["embedding_type"].getboolean("learned"):
 			embedding_type = "learned"
+		elif self.config["embedding_type"].getboolean("vild"):
+			embedding_type = "vild"
 
-		print(df.shape)
+		
+
+		# print(df.shape)
 		batch_cluster_count_df = pd.DataFrame() # dataframe with all batches
 		# samples = 2
 		# epsilon = 0.35
 		samples = self.config['our_method'].getint('samples')
 		epsilon = self.config['our_method'].getfloat('epsilon')
 		
+		buffer_size = 20 #janeth
+		buffer_centroids = [] #np.zeros(buffer_size)#[] #janeth
+		# every window is a batch #janeth
 		# loop through images with a sliding window
-		print(f"self images {self.image_names}")
+		# print(f"self images {self.image_names}")
 		for window_end_idx in range(window_size, last_image, window_step):
+			print("buffer_centroids: ", buffer_centroids) #janeth
 			print(f"performing clustering over images for batch {batch_number}")
 			objects_df = df.loc[df['image_name'].isin(self.image_names[window_end_idx-window_size:window_end_idx])]
 			# print(f"images for batch {batch_number} are {self.image_names[window_end_idx-window_size:window_end_idx]}")
@@ -681,8 +715,55 @@ class NLMap():
 				plt.savefig(f"{self.figs_dir_path}/distances_batch:{batch_number}.jpg", bbox_inches='tight')
 				plt.close()
 			
-			clustering = DBSCAN(eps=epsilon, min_samples=samples).fit(objects_df) 
+			print("object df: ", objects_df)
+			clustering = DBSCAN(eps=epsilon, min_samples=samples).fit(objects_df) # Noisy samples are given the label -1
 			objects_df.loc[:,'cluster'] = clustering.labels_
+			# print("CLUSTER LABELS", objects_df.loc[:,'cluster'].loc[0]) #janeth
+			# print("core sample indices: ", clustering.components_) #janeth 
+			core_components = clustering.components_ # Copy of each core sample found by training #janeth
+			# Have each core component "centroid" 
+			# If two core components are the same, then the two groups with those labels are most likely the same object
+			# Note: depends on the information of core components
+			# If the components are images, then each batch has different data points, so no two core components will be the same
+			# If the components are arbitrary location points in the center of the data (centroids), then there will be some distance mismatch
+			# then: use cosine similarity to get the "distance" between these points
+			# instead: have a list with
+
+			## TODO: keep track of poses of centroid. Can access df for the poses
+
+			# dummy code: does not run because core_components is empty
+			# for center in core_components:
+			# print("TYPE: ", type(core_components))
+			# Problem, what if the buffer_centroids are empty? -> add all the core components
+			distances = []
+			indices = []
+			for comp in core_components:
+				dist = cosine_similarity(comp, buffer_centroids) # distance of a component with each of the buffer centroids
+				# print("dist: ", dist)
+				distances.append(np.min(dist)) # get the closest centroid to the current centroid
+				indices.append(np.argmin(dist)) # get the index of the buffer centroid that the component is closest to
+				# this will be the clustering that is most likely the same object for this other centroid
+			
+			# This does not take into consideration when a new one should be added that wasn't already in the list
+			if len(buffer_centroids) < 1:
+				buffer_centroids = np.copy(core_components)
+			else:
+				# If two+ centroids are (close to) equal, add them to a buffer list
+				# this is only adding one component, not all of the ones that could be the same
+				# for all of them, could add similar to knn: sort based on distance and add the k closest
+				min_dist = np.min(distances) 
+				min_index = np.argmin(distances)
+				buffer_index = indices[min_index]
+				# the same one already exists in the buffer, so should it be added?
+				# could take into consideration when thinking about removing ones we don't see
+				# Move it to the end of the list & always pop from the beginning if the list gets too long
+				if len(buffer_centroids) >= 20:
+					newest = buffer_centroids.pop(buffer_index) # move the closest one to the end
+					buffer_centroids.append(newest)
+					buffer_centroids.pop() # remove from beginning
+				else:
+					newest = buffer_centroids.pop(buffer_index)
+					buffer_centroids.append(newest)
 
 			# generating the cluster accuracy numbers
 			if self.config["our_method"].getboolean("use_our_method") and self.config["our_method"].getboolean("KTH_dataset"):
@@ -883,6 +964,7 @@ class NLMap():
 
 	def compute_text_embeddings(self):
 		self.cache_text_exists = os.path.isfile(f"{self.cache_path}_text")
+		# print("PRINT: ", f"{self.cache_path}_text")
 		print(self.cache_text_exists)
 
 		#if text cache should be used and it exists, load it

@@ -1,6 +1,6 @@
 samples=3
 # samples= 2 #3
-window_step=17
+window_step=10
 # window_step= 34 #20
 epsilon_100=20
 # epsilon=$(echo "scale=6; $epsilon_100 / 1000000" | bc)
