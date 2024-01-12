@@ -63,6 +63,7 @@ from sklearn.manifold import TSNE
 import plotly.express as px
 from sklearn.neighbors import NearestNeighbors
 from sklearn.metrics.pairwise import cosine_similarity #janeth
+from sklearn.metrics import pairwise_distances_argmin_min #janeth
 
 from pathlib import Path
 import PIL.Image
@@ -683,13 +684,13 @@ class NLMap():
 		samples = self.config['our_method'].getint('samples')
 		epsilon = self.config['our_method'].getfloat('epsilon')
 		
-		buffer_size = 20 #janeth
-		buffer_centroids = [] #np.zeros(buffer_size)#[] #janeth
+		# buffer_size = 20 #janeth
+		# buffer_centroids = [] #np.zeros(buffer_size)#[] #janeth
 		# every window is a batch #janeth
 		# loop through images with a sliding window
 		# print(f"self images {self.image_names}")
 		for window_end_idx in range(window_size, last_image, window_step):
-			print("buffer_centroids: ", buffer_centroids) #janeth
+			# print("buffer_centroids: ", buffer_centroids) #janeth
 			print(f"performing clustering over images for batch {batch_number}")
 			objects_df = df.loc[df['image_name'].isin(self.image_names[window_end_idx-window_size:window_end_idx])]
 			# print(f"images for batch {batch_number} are {self.image_names[window_end_idx-window_size:window_end_idx]}")
@@ -715,12 +716,24 @@ class NLMap():
 				plt.savefig(f"{self.figs_dir_path}/distances_batch:{batch_number}.jpg", bbox_inches='tight')
 				plt.close()
 			
-			print("object df: ", objects_df)
+			# print("object df: ", objects_df)
 			clustering = DBSCAN(eps=epsilon, min_samples=samples).fit(objects_df) # Noisy samples are given the label -1
 			objects_df.loc[:,'cluster'] = clustering.labels_
+
+			# TODO: find where the centroids are - these are the vector space of the object categories
+			# print()
+			# centroids = np.copy(objects_df[:3]) # both have to have the same number of features - i.e. second dimension
+			# # only include embedding for objects_df
+
+			# labels, _ = pairwise_distances_argmin_min(objects_df, centroids) # labels = index of the nearest centroid. 
+			
+			# print("labels: ", labels)
+			# exit(0)
+			# change: run knn with the centers as the vector space of each object
+
 			# print("CLUSTER LABELS", objects_df.loc[:,'cluster'].loc[0]) #janeth
 			# print("core sample indices: ", clustering.components_) #janeth 
-			core_components = clustering.components_ # Copy of each core sample found by training #janeth
+			# core_components = clustering.components_ # Copy of each core sample found by training #janeth
 			# Have each core component "centroid" 
 			# If two core components are the same, then the two groups with those labels are most likely the same object
 			# Note: depends on the information of core components
@@ -729,41 +742,39 @@ class NLMap():
 			# then: use cosine similarity to get the "distance" between these points
 			# instead: have a list with
 
-			## TODO: keep track of poses of centroid. Can access df for the poses
-
 			# dummy code: does not run because core_components is empty
 			# for center in core_components:
 			# print("TYPE: ", type(core_components))
 			# Problem, what if the buffer_centroids are empty? -> add all the core components
-			distances = []
-			indices = []
-			for comp in core_components:
-				dist = cosine_similarity(comp, buffer_centroids) # distance of a component with each of the buffer centroids
-				# print("dist: ", dist)
-				distances.append(np.min(dist)) # get the closest centroid to the current centroid
-				indices.append(np.argmin(dist)) # get the index of the buffer centroid that the component is closest to
-				# this will be the clustering that is most likely the same object for this other centroid
+			# distances = []
+			# indices = []
+			# for comp in core_components:
+			# 	dist = cosine_similarity(comp, buffer_centroids) # distance of a component with each of the buffer centroids
+			# 	# print("dist: ", dist)
+			# 	distances.append(np.min(dist)) # get the closest centroid to the current centroid
+			# 	indices.append(np.argmin(dist)) # get the index of the buffer centroid that the component is closest to
+			# 	# this will be the clustering that is most likely the same object for this other centroid
 			
-			# This does not take into consideration when a new one should be added that wasn't already in the list
-			if len(buffer_centroids) < 1:
-				buffer_centroids = np.copy(core_components)
-			else:
-				# If two+ centroids are (close to) equal, add them to a buffer list
-				# this is only adding one component, not all of the ones that could be the same
-				# for all of them, could add similar to knn: sort based on distance and add the k closest
-				min_dist = np.min(distances) 
-				min_index = np.argmin(distances)
-				buffer_index = indices[min_index]
-				# the same one already exists in the buffer, so should it be added?
-				# could take into consideration when thinking about removing ones we don't see
-				# Move it to the end of the list & always pop from the beginning if the list gets too long
-				if len(buffer_centroids) >= 20:
-					newest = buffer_centroids.pop(buffer_index) # move the closest one to the end
-					buffer_centroids.append(newest)
-					buffer_centroids.pop() # remove from beginning
-				else:
-					newest = buffer_centroids.pop(buffer_index)
-					buffer_centroids.append(newest)
+			# # This does not take into consideration when a new one should be added that wasn't already in the list
+			# if len(buffer_centroids) < 1:
+			# 	buffer_centroids = np.copy(core_components)
+			# else:
+			# 	# If two+ centroids are (close to) equal, add them to a buffer list
+			# 	# this is only adding one component, not all of the ones that could be the same
+			# 	# for all of them, could add similar to knn: sort based on distance and add the k closest
+			# 	min_dist = np.min(distances) 
+			# 	min_index = np.argmin(distances)
+			# 	buffer_index = indices[min_index]
+			# 	# the same one already exists in the buffer, so should it be added?
+			# 	# could take into consideration when thinking about removing ones we don't see
+			# 	# Move it to the end of the list & always pop from the beginning if the list gets too long
+			# 	if len(buffer_centroids) >= 20:
+			# 		newest = buffer_centroids.pop(buffer_index) # move the closest one to the end
+			# 		buffer_centroids.append(newest)
+			# 		buffer_centroids.pop() # remove from beginning
+			# 	else:
+			# 		newest = buffer_centroids.pop(buffer_index)
+			# 		buffer_centroids.append(newest)
 
 			# generating the cluster accuracy numbers
 			if self.config["our_method"].getboolean("use_our_method") and self.config["our_method"].getboolean("KTH_dataset"):
