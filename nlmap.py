@@ -258,6 +258,7 @@ class NLMap():
 							i += 1
 				
 			print(f"gts {self.ground_truths}")
+			# can see the ground truths from here ^
 			# print(self.object_image_list)
 
 			## export the groundtruth dict as csv
@@ -608,6 +609,25 @@ class NLMap():
 				if self.config["cache"].getboolean("images"):
 					pickle.dump(self.topk_vild_dir,open(f"{self.cache_path}_topk_vild","wb"))
 					pickle.dump(self.topk_clip_dir,open(f"{self.cache_path}_topk_clip","wb"))
+		
+		##### 
+		categories_temp = ['flipflop', 'street sign', 'bracelet', 'necklace', 'shorts', 
+		'floral camisole', 'orange shirt', 'purple dress', 'yellow tee', 'green umbrella', 
+		'pink striped umbrella', 'transparent umbrella', 'plain pink umbrella', 'blue patterned umbrella', 
+		'koala', 'electric box','car', 'pole']
+		categories_temp = [{'name': item, 'id': idx+1,} for idx, item in enumerate(categories_temp)]
+		priority_queue_v_d = defaultdict(PriorityQueue) 
+
+		# Load ViLD model
+		from vild.vild_utils import build_text_embedding, extract_roi_vild, paste_instance_masks
+
+		self.session = tf.Session(graph=tf.Graph())
+		_ = tf.saved_model.loader.load(self.session, ['serve'], self.config["paths"]["vild_dir"])
+		model, preprocess = clip.load("ViT-B/32")
+
+		text_features = build_text_embedding(categories_temp, model, preprocess)
+
+		######
 
 		if self.config["our_method"].getboolean("use_our_method") and self.config['our_method'].getboolean('learn_representation') and self.config["our_method"].getboolean("KTH_dataset"):
 			train_siamese_network(self.learning_data, cache_path=self.cache_path)
@@ -675,8 +695,6 @@ class NLMap():
 		elif self.config["embedding_type"].getboolean("vild"):
 			embedding_type = "vild"
 
-		
-
 		# print(df.shape)
 		batch_cluster_count_df = pd.DataFrame() # dataframe with all batches
 		# samples = 2
@@ -684,20 +702,22 @@ class NLMap():
 		samples = self.config['our_method'].getint('samples')
 		epsilon = self.config['our_method'].getfloat('epsilon')
 		
-		# buffer_size = 20 #janeth
-		# buffer_centroids = [] #np.zeros(buffer_size)#[] #janeth
-		# every window is a batch #janeth
 		# loop through images with a sliding window
 		# print(f"self images {self.image_names}")
 		for window_end_idx in range(window_size, last_image, window_step):
 			# print("buffer_centroids: ", buffer_centroids) #janeth
 			print(f"performing clustering over images for batch {batch_number}")
 			objects_df = df.loc[df['image_name'].isin(self.image_names[window_end_idx-window_size:window_end_idx])]
-			# print(f"images for batch {batch_number} are {self.image_names[window_end_idx-window_size:window_end_idx]}")
-			# print(df.shape)
-			# batch_images = image_list[step * batch_number : step * batch_number + window_size]
-			# print(f"predicted imaes for batch {batch_number} are {self.image_names[window_step*batch_number: window_step*batch_number+window_size]}")
 			objects_df = objects_df[subset_columns]
+
+
+			m = np.dot(objects_df, text_features.T)
+			most_similar_object = np.argmax(m, axis=1)
+
+			# print("sim: ", max_dot_similarity)
+			# print("size: ", len(max_dot_similarity))
+			# exit(0)
+
 			if self.config['our_method'].getboolean('analysis'):
 			### do  clustering analysis
 				neighbors = NearestNeighbors(n_neighbors=samples) # same as min samples
@@ -720,9 +740,20 @@ class NLMap():
 			clustering = DBSCAN(eps=epsilon, min_samples=samples).fit(objects_df) # Noisy samples are given the label -1
 			objects_df.loc[:,'cluster'] = clustering.labels_
 
+			if self.config["clustering"].getboolean("knn"):
+				columns_emb_name = [f"vild_embedding_{i}" for i in range(FEAT_SIZE)]
+
+			# print("rows maybe: ", objects_df[columns_emb_name])
+			# print("columns_emb_name: ", columns_emb_name)
+
 			# TODO: text features and pairwise on text features
 			# centroids = np.copy(objects_df[:3]) 
 			# labels, _ = pairwise_distances_argmin_min(objects_df, centroids) # labels = index of the nearest centroid. 
+			# cols = objects_df.filter(like='embedding')
+			# print("stuff: ", list(objects_df.columns.values))
+			# 
+			# # print("COLS: ", cols)
+			# columns_emb_name = [f"vild_embedding_{i}" for i in range(FEAT_SIZE)]
 
 			# generating the cluster accuracy numbers
 			if self.config["our_method"].getboolean("use_our_method") and self.config["our_method"].getboolean("KTH_dataset"):
