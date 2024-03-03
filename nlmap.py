@@ -6,7 +6,7 @@ from tqdm import tqdm
 import numpy as np
 from collections import defaultdict, deque
 from queue import PriorityQueue
-from PIL import Image
+from PIL import Image, ImageDraw
 import clip
 import torch
 import time
@@ -62,8 +62,8 @@ import pandas as pd
 from sklearn.manifold import TSNE
 import plotly.express as px
 from sklearn.neighbors import NearestNeighbors
-from sklearn.metrics.pairwise import cosine_similarity #janeth
-from sklearn.metrics import pairwise_distances_argmin_min #janeth
+from sklearn.metrics import confusion_matrix # janeth
+import seaborn as sns # janeth
 
 from pathlib import Path
 import PIL.Image
@@ -257,7 +257,7 @@ class NLMap():
 								query_datastructure[filename+"_"+str( label_idx)] = (root.attrib["label"], [rmin, rmax, cmin, cmax])
 							i += 1
 				
-			print(f"gts {self.ground_truths}")
+			# print(f"gts {self.ground_truths}")
 			# can see the ground truths from here ^
 			# print(self.object_image_list)
 
@@ -272,7 +272,6 @@ class NLMap():
 			gt_labels = list(self.label_dict.keys())
 			labels = label_encoder.fit(gt_labels)
 			labels = label_encoder.transform(gt_labels)
-			print(f"labels are: {labels}")
 			i = 0
 			for gt in gt_labels:
 				self.labels_to_ints[gt] = labels[i]
@@ -344,7 +343,7 @@ class NLMap():
 				# exit()
 				if "label" in image_name:
 					continue
-				print(count)
+				# print(count)
 
 				max = int(self.config['our_method']['max_images'])
 				if count == max: 
@@ -353,7 +352,7 @@ class NLMap():
 
 				if self.config["our_method"].getboolean("KTH_dataset"):
 					img_index = int(image_name.split("_")[-1].strip(".jpg"))
-					print(image_name.split("_"))
+					# print(image_name.split("_"))
 				else: #TODO change this
 					end_idx = image_name.index('.')
 					img_index = image_name[6:end_idx]
@@ -447,8 +446,8 @@ class NLMap():
 					crop = np.copy(raw_image[y1:y2, x1:x2, :])
 					
 					# getting a crop of the combined depth and rgb image
-					print(self.config['our_method'].getboolean('use_our_method'))
-					print(self.config["our_method"].getboolean("KTH_dataset"))
+					# print(self.config['our_method'].getboolean('use_our_method'))
+					# print(self.config["our_method"].getboolean("KTH_dataset"))
 					if self.config['our_method'].getboolean('use_our_method') and not self.config["our_method"].getboolean("KTH_dataset"):
 						print("Iterating over annotation boxes")
 						combined_image_path = image_path.replace('color', 'combined')
@@ -468,7 +467,7 @@ class NLMap():
 					if (not self.cache_image_exists):
 						crop_fname = f"{self.cache_path}_{self.config['dir_names']['data']}_{image_name}_crop_{anno_idx}.jpeg"
 						combined_crop_fname = f"{self.cache_path}_{self.config['dir_names']['data']}_{image_name}_crop_{anno_idx}_combined.jpeg"
-						print(f"original name: {crop_fname}")
+						# print(f"original name: {crop_fname}")
 						# making the crop names not super long
 						# if self.config["our_method"].getboolean("KTH_dataset"):
 						# 	crop_fname = crop_fname.replace(f'{str(self.config["dir_names"]["data"])}_', '')
@@ -517,7 +516,7 @@ class NLMap():
 					assigned_crops = set()
 					# loop through all ground truths in the image
 					for (gt_name, gt_bb, _3d_poisiton, gt_idx) in self.ground_truths[image_name]:
-						print(f'ground truths in loop {self.ground_truths[image_name]}')	
+						# print(f'ground truths in loop {self.ground_truths[image_name]}')	
 						r1, r2, c1, c2 = gt_bb 
 						best_overlap = float(self.config['our_method']['bbox_overlap_thresh']) 
 						best_embedding = None
@@ -610,13 +609,16 @@ class NLMap():
 					pickle.dump(self.topk_vild_dir,open(f"{self.cache_path}_topk_vild","wb"))
 					pickle.dump(self.topk_clip_dir,open(f"{self.cache_path}_topk_clip","wb"))
 		
-		##### 
-		categories_temp = ['flipflop', 'street sign', 'bracelet', 'necklace', 'shorts', 
-		'floral camisole', 'orange shirt', 'purple dress', 'yellow tee', 'green umbrella', 
-		'pink striped umbrella', 'transparent umbrella', 'plain pink umbrella', 'blue patterned umbrella', 
-		'koala', 'electric box','car', 'pole']
-		categories_temp = [{'name': item, 'id': idx+1,} for idx, item in enumerate(categories_temp)]
-		priority_queue_v_d = defaultdict(PriorityQueue) 
+		# Generate text features for each object
+		labels_features = pd.read_csv('/home/ifrah/longterm_semantic_map/nlmap_hotcake/object_features/text_features.csv', header=1)
+		object_strings = []
+
+		# Choose which features to use
+		for index, row in labels_features.iterrows():
+			object_string = ' '.join(str(value) for value in row[:-2])
+			object_strings.append(object_string)
+
+		groundtruth_objects = [{'name': item, 'id': idx+1,} for idx, item in enumerate(object_strings)]
 
 		# Load ViLD model
 		from vild.vild_utils import build_text_embedding, extract_roi_vild, paste_instance_masks
@@ -624,24 +626,22 @@ class NLMap():
 		self.session = tf.Session(graph=tf.Graph())
 		_ = tf.saved_model.loader.load(self.session, ['serve'], self.config["paths"]["vild_dir"])
 		model, preprocess = clip.load("ViT-B/32")
+		text_features = build_text_embedding(groundtruth_objects, model, preprocess)
 
-		text_features = build_text_embedding(categories_temp, model, preprocess)
-
-		######
 
 		if self.config["our_method"].getboolean("use_our_method") and self.config['our_method'].getboolean('learn_representation') and self.config["our_method"].getboolean("KTH_dataset"):
 			train_siamese_network(self.learning_data, cache_path=self.cache_path)
 		
 		if self.config["cache"].getboolean("images"):
-			print(f"embeddings df {df.head}")
-			print(df.columns.tolist())
-			print(df["image_index"].dtypes)
+			# print(f"embeddings df {df.head}")
+			# print(df.columns.tolist())
+			# print(df["image_index"].dtypes)
 			df.to_csv(f"{self.cache_path}_embeddings.csv")
 			print("done with storing cache of embedding is done")
 			## TODO: save in the df the visual emb not the fused embedding	
 			
 		print("clustering starts")
-		print(df.columns)
+		# print(df.columns)
 
 		# configs for what kind of embedding to use
 		if self.config["embedding_type"].getboolean("vild"):
@@ -704,19 +704,53 @@ class NLMap():
 		
 		# loop through images with a sliding window
 		# print(f"self images {self.image_names}")
+		pred_windows = []
+		gt_windows = []
+		first_five = list(self.label_dict.keys())[:10]
+		stats = [[0,0] for i in first_five]
+		pred_labels = [[0 for i in self.label_dict.keys()] for i in first_five]
+		probs = dict(zip(first_five, stats))
+		preds = dict(zip(first_five, pred_labels))
+		w_i = 0
+
 		for window_end_idx in range(window_size, last_image, window_step):
-			# print("buffer_centroids: ", buffer_centroids) #janeth
 			print(f"performing clustering over images for batch {batch_number}")
 			objects_df = df.loc[df['image_name'].isin(self.image_names[window_end_idx-window_size:window_end_idx])]
 			objects_df = objects_df[subset_columns]
 
-
+			# Compute similarities between objects and known labels
 			m = np.dot(objects_df, text_features.T)
 			most_similar_object = np.argmax(m, axis=1)
+			top_5_similar_objects = np.argsort(-m, axis=1)[:,:5]
+			string_labels =  list(self.label_dict.keys()) 
 
-			# print("sim: ", max_dot_similarity)
-			# print("size: ", len(max_dot_similarity))
-			# exit(0)
+			top_5_string = []
+			for obj in top_5_similar_objects:
+				top_5_string.append([string_labels[j] for j in obj])
+	
+			prediction = [string_labels[i] for i in most_similar_object]
+			pred_windows += prediction
+			
+			# Obtain the ground truth labels
+			index_of_objects_subset = df.index[df['image_name'].isin(self.image_names[window_end_idx-window_size:window_end_idx])]
+			actual_labels = self.learning_data["label"][index_of_objects_subset[0]:index_of_objects_subset[-1]+1]
+			gt_windows += actual_labels
+
+			subset_image_names = df.loc[df['image_name'].isin(self.image_names[window_end_idx-window_size:window_end_idx])]
+			subset_image_names = subset_image_names["image_name"]
+
+			# for j, im in enumerate(subset_image_names.index):
+			# 	vals_col = m[j]
+			# 	correct_label_index = string_labels.index(actual_labels[j])
+			# 	plt.figure(figsize=(20, 6))
+			# 	bars = plt.bar(string_labels, vals_col, color='skyblue')
+			# 	bars[correct_label_index].set_color('green')
+			# 	plt.xlabel('Labels')
+			# 	plt.ylabel('Dot product of each object')
+			# 	plt.title(f'{actual_labels[j]}')
+			# 	plt.xticks(rotation=45) 
+			# 	plt.tight_layout()  
+			# 	plt.savefig(f"/home/ifrah/longterm_semantic_map/nlmap_hotcake/viz_j/window:{w_i}_object:{actual_labels[j]}pdf.png")
 
 			if self.config['our_method'].getboolean('analysis'):
 			### do  clustering analysis
@@ -743,22 +777,10 @@ class NLMap():
 			if self.config["clustering"].getboolean("knn"):
 				columns_emb_name = [f"vild_embedding_{i}" for i in range(FEAT_SIZE)]
 
-			# print("rows maybe: ", objects_df[columns_emb_name])
-			# print("columns_emb_name: ", columns_emb_name)
-
-			# TODO: text features and pairwise on text features
-			# centroids = np.copy(objects_df[:3]) 
-			# labels, _ = pairwise_distances_argmin_min(objects_df, centroids) # labels = index of the nearest centroid. 
-			# cols = objects_df.filter(like='embedding')
-			# print("stuff: ", list(objects_df.columns.values))
-			# 
-			# # print("COLS: ", cols)
-			# columns_emb_name = [f"vild_embedding_{i}" for i in range(FEAT_SIZE)]
-
 			# generating the cluster accuracy numbers
 			if self.config["our_method"].getboolean("use_our_method") and self.config["our_method"].getboolean("KTH_dataset"):
-				print(f"df is {df}")
-				print(f"image names subset {self.image_names[window_end_idx-window_size:window_end_idx]}")
+				# print(f"df is {df}")
+				# print(f"image names subset {self.image_names[window_end_idx-window_size:window_end_idx]}")
 				gt_labels_input = [self.labels_to_ints[l] for l in df.loc[df['image_name'].isin(self.image_names[window_end_idx-window_size:window_end_idx])]['ground_truth_label_name'].tolist()]
 				# self.index_per_batch is a list containing the results of cluster_accuracy for each batch
 				self.index_per_batch.append(cluster_accuracy(gt_labels_input, clustering.labels_))
@@ -907,7 +929,7 @@ class NLMap():
 			print(f"labels are: {labels}")
 			i = 0
 			for gt in gt_labels:
-				self.labels_to_ints[gt] = labels[i]
+				self.labels_to_ints[gt] = labels[i] 
 				i += 1
 
 			################## ground truth detection stats ################
