@@ -435,7 +435,7 @@ class NLMap():
 
 				### Go through the top crops (baseline) or all crops (our_method)
 				for anno_idx in indices[0:int(n_boxes)]:
-					print("Iterating over annotation boxes")
+					# print("Iterating over annotation boxes")
 					# continue
 					rpn_score = detection_roi_scores[anno_idx]
 					bbox = rescaled_detection_boxes[anno_idx]
@@ -533,9 +533,9 @@ class NLMap():
 							y1, x1, y2, x2 = int(np.floor(bbox[0])), int(np.floor(bbox[1])), int(np.ceil(bbox[2])), int(np.ceil(bbox[3]))
 							
 							# skipping boxes that are too big
-							print(f'y2 box area {(y2 - y1) * (x2 - x1)}')
+							# print(f'y2 box area {(y2 - y1) * (x2 - x1)}')
 							if abs( (y2 - y1) * (x2 - x1) ) > int(self.config['our_method']['max_box_area']):
-								print(f'skippedddd crop {crop_fname}')
+								# print(f'skippedddd crop {crop_fname}')
 								continue
 
 							# calculate overlap between the ground truth and detection
@@ -609,25 +609,27 @@ class NLMap():
 					pickle.dump(self.topk_vild_dir,open(f"{self.cache_path}_topk_vild","wb"))
 					pickle.dump(self.topk_clip_dir,open(f"{self.cache_path}_topk_clip","wb"))
 		
+		
 		# Generate text features for each object
-		labels_features = pd.read_csv('/home/ifrah/longterm_semantic_map/nlmap_hotcake/object_features/features.csv', header=1)
+		labels_features = pd.read_csv(self.config["our_method"]["image_label_dir"]+'/features.csv', header=1)
 		object_strings = []
 
 		# Choose which features to use
 		for index, row in labels_features.iterrows():
 			object_string = ' '.join(str(value) for value in row[:-2])
-			object_strings.append(object_string)
+			object_strings.append((object_string, self.config["our_method"]["image_label_dir"]+'/'+row[0]+'.png'))
 
-		groundtruth_objects = [{'name': item, 'id': idx+1,} for idx, item in enumerate(object_strings)]
+		groundtruth_objects = [{'name': obj_string, 'id': idx+1, 'img': obj_path} for idx, (obj_string, obj_path) in enumerate(object_strings)]
+		if not self.config["our_method"].getboolean("use_image_as_label"):
+			# Load ViLD model
+			from vild.vild_utils import build_text_embedding, extract_roi_vild, paste_instance_masks
 
-		# Load ViLD model
-		from vild.vild_utils import build_text_embedding, extract_roi_vild, paste_instance_masks
-
-		self.session = tf.Session(graph=tf.Graph())
-		_ = tf.saved_model.loader.load(self.session, ['serve'], self.config["paths"]["vild_dir"])
-		model, preprocess = clip.load("ViT-B/32")
-		text_features = build_text_embedding(groundtruth_objects, model, preprocess)
-		# TODO: code here to 
+			self.session = tf.Session(graph=tf.Graph())
+			_ = tf.saved_model.loader.load(self.session, ['serve'], self.config["paths"]["vild_dir"])
+			model, preprocess = clip.load("ViT-B/32")
+			label_features = build_text_embedding(groundtruth_objects, model, preprocess)
+		else:
+			label_features = self.process_image_labels(groundtruth_objects)
 
 		if self.config["our_method"].getboolean("use_our_method") and self.config['our_method'].getboolean('learn_representation') and self.config["our_method"].getboolean("KTH_dataset"):
 			train_siamese_network(self.learning_data, cache_path=self.cache_path)
@@ -767,7 +769,7 @@ class NLMap():
 				# 	os.makedirs(self.figs_dir_path)
 				plt.savefig(f"{self.figs_dir_path}/distances_batch:{batch_number}.jpg", bbox_inches='tight')
 				plt.close()
-			
+		
 			# print("object df: ", objects_df)
 			clustering = DBSCAN(eps=epsilon, min_samples=samples).fit(objects_df) # Noisy samples are given the label -1
 			objects_df.loc[:,'cluster'] = clustering.labels_
@@ -1272,6 +1274,21 @@ class NLMap():
 						arm_object_grasp(self.robot_state_client,self.manipulation_api_client,best_pixel,image_responses[1])
 
 						break #move onto next category
+
+	def process_image_labels(self, objects):
+		device = "cuda" if torch.cuda.is_available() else "cpu"
+		label_features = []
+		self.clip_model, self.clip_preprocess = clip.load(self.config["clip"]["model"])
+		for obj in tqdm(objects):
+			img = Image.open(obj['img'])
+			img_processed = self.clip_preprocess(img).unsqueeze(0).to(device)
+			clip_image_features = self.clip_model.encode_image(img_processed)
+			clip_image_features = clip_image_features / clip_image_features.norm(dim=1, keepdim=True)
+			clip_image_features = clip_image_features.cpu().detach().numpy()
+			
+			label_features.append(clip_image_features)
+
+		return np.concatenate(label_features)
 
 if __name__ == "__main__":
 	### Parse arguments from command line
