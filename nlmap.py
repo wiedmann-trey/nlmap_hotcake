@@ -62,8 +62,8 @@ import pandas as pd
 from sklearn.manifold import TSNE
 import plotly.express as px
 from sklearn.neighbors import NearestNeighbors
-from sklearn.metrics import confusion_matrix # janeth
-import seaborn as sns # janeth
+from sklearn.metrics import confusion_matrix, accuracy_score, precision_score, recall_score, f1_score 
+import seaborn as sns
 
 from pathlib import Path
 import PIL.Image
@@ -610,7 +610,7 @@ class NLMap():
 					pickle.dump(self.topk_clip_dir,open(f"{self.cache_path}_topk_clip","wb"))
 		
 		# Generate text features for each object
-		labels_features = pd.read_csv('/home/ifrah/longterm_semantic_map/nlmap_hotcake/object_features/text_features.csv', header=1)
+		labels_features = pd.read_csv('/home/ifrah/longterm_semantic_map/nlmap_hotcake/object_features/features.csv', header=1)
 		object_strings = []
 
 		# Choose which features to use
@@ -627,7 +627,7 @@ class NLMap():
 		_ = tf.saved_model.loader.load(self.session, ['serve'], self.config["paths"]["vild_dir"])
 		model, preprocess = clip.load("ViT-B/32")
 		text_features = build_text_embedding(groundtruth_objects, model, preprocess)
-
+		# TODO: code here to 
 
 		if self.config["our_method"].getboolean("use_our_method") and self.config['our_method'].getboolean('learn_representation') and self.config["our_method"].getboolean("KTH_dataset"):
 			train_siamese_network(self.learning_data, cache_path=self.cache_path)
@@ -712,6 +712,10 @@ class NLMap():
 		probs = dict(zip(first_five, stats))
 		preds = dict(zip(first_five, pred_labels))
 		w_i = 0
+		y_true = np.array([])
+		y_pred_top1 = np.array([])
+		y_pred_top5 = np.empty((0, 5))
+		class_scores = np.empty((0, 69))
 
 		for window_end_idx in range(window_size, last_image, window_step):
 			print(f"performing clustering over images for batch {batch_number}")
@@ -719,9 +723,10 @@ class NLMap():
 			objects_df = objects_df[subset_columns]
 
 			# Compute similarities between objects and known labels
-			m = np.dot(objects_df, text_features.T)
-			most_similar_object = np.argmax(m, axis=1)
-			top_5_similar_objects = np.argsort(-m, axis=1)[:,:5]
+			sim_scores = np.dot(objects_df, text_features.T)
+			class_scores = np.vstack((class_scores, sim_scores))
+			most_similar_object = np.argmax(sim_scores, axis=1)
+			top_5_similar_objects = np.argsort(-sim_scores, axis=1)[:,:5]
 			string_labels =  list(self.label_dict.keys()) 
 
 			top_5_string = []
@@ -736,21 +741,14 @@ class NLMap():
 			actual_labels = self.learning_data["label"][index_of_objects_subset[0]:index_of_objects_subset[-1]+1]
 			gt_windows += actual_labels
 
+			# For metrics
+			true_index_labels = [string_labels.index(label) for label in actual_labels if label in string_labels]
+			y_pred_top1 = np.append(y_pred_top1, most_similar_object)
+			y_pred_top5 = np.vstack((y_pred_top5, top_5_similar_objects))
+			y_true = np.append(y_true, true_index_labels)
+
 			subset_image_names = df.loc[df['image_name'].isin(self.image_names[window_end_idx-window_size:window_end_idx])]
 			subset_image_names = subset_image_names["image_name"]
-
-			# for j, im in enumerate(subset_image_names.index):
-			# 	vals_col = m[j]
-			# 	correct_label_index = string_labels.index(actual_labels[j])
-			# 	plt.figure(figsize=(20, 6))
-			# 	bars = plt.bar(string_labels, vals_col, color='skyblue')
-			# 	bars[correct_label_index].set_color('green')
-			# 	plt.xlabel('Labels')
-			# 	plt.ylabel('Dot product of each object')
-			# 	plt.title(f'{actual_labels[j]}')
-			# 	plt.xticks(rotation=45) 
-			# 	plt.tight_layout()  
-			# 	plt.savefig(f"/home/ifrah/longterm_semantic_map/nlmap_hotcake/viz_j/window:{w_i}_object:{actual_labels[j]}pdf.png")
 
 			if self.config['our_method'].getboolean('analysis'):
 			### do  clustering analysis
@@ -844,6 +842,61 @@ class NLMap():
 			if os.path.isdir(cluster_dir):
 				fig.write_html(os.path.join(cluster_dir, f"clustering{batch_number}.html"))
 			batch_number += 1
+
+		# Metrics
+		if self.config["stats"].getboolean("print_stats"):
+			accuracy = accuracy_score(y_true, y_pred_top1)
+			top5_accuracy = np.mean(np.array([true_label in pred_indices for true_label, pred_indices in zip(y_true, y_pred_top5)]))
+
+			print("top 1 accuracy: ", accuracy)
+			print("top 5 accuracy: ", top5_accuracy)
+
+			types = ['macro', 'micro', 'weighted']
+			for t in types:
+				precision = precision_score(y_true, y_pred_top1, average=t, zero_division=1)
+				recall = recall_score(y_true, y_pred_top1, average=t, zero_division=1)
+				f1 = f1_score(y_true, y_pred_top1, average=t)
+				print(t)
+				print("precision: ", precision)
+				print("recall: ", recall)
+				print("f1: ", f1)
+				print()
+
+		# Confusion matrix
+		if self.config["stats"].getboolean("confusion_matrix"):
+			string_labels =  list(self.label_dict.keys())
+			top5 = [true_label if true_label in pred_indices else pred_indices[0] for true_label, pred_indices in zip(y_true, y_pred_top5)]
+			conf_matrix = confusion_matrix(y_true, top5)
+			plt.figure(figsize=(10, 8))
+			sns.heatmap(conf_matrix, annot=True, fmt='d', cmap='Blues', xticklabels=string_labels, yticklabels=string_labels, annot_kws={"fontsize": 10, "ha": 'center', "va": 'center'})
+			plt.xlabel('Predicted Labels')
+			plt.ylabel('True Labels')
+			plt.title('Confusion Matrix')
+			plt.savefig(f"/home/ifrah/longterm_semantic_map/nlmap_hotcake/viz_j/graphs/confusion_matrix_top5.png")
+			
+		# Visualizations
+		if self.config["stats"].getboolean("debug"):
+			label_frequency = {}
+			for i, obj in enumerate(string_labels):
+				obj_indices = np.where(np.array(y_true) == string_labels.index(obj))[0]
+				obj_predictions = y_pred_top5[obj_indices]
+				obj_label_freq = {label: np.sum(obj_predictions == string_labels.index(label)) for label in string_labels}
+				label_frequency[obj] = obj_label_freq
+				
+			for i, obj in enumerate(string_labels):
+				lf = list(label_frequency[obj].values())
+				labels = [label for label, freq in label_frequency[obj].items() if freq > 0]
+				lf_filtered = [freq for freq in lf if freq > 0]
+				
+				plt.figure()
+				plt.bar(range(len(lf_filtered)), lf_filtered)
+				plt.title(f'Frequency of Predictions for {obj}')
+				plt.xlabel('Predicted Labels')
+				plt.ylabel('Frequency')
+				plt.xticks(range(len(lf_filtered)), labels, rotation=45)
+				plt.tight_layout()
+				plt.savefig(f'/home/ifrah/longterm_semantic_map/nlmap_hotcake/viz_j/frequency/figure_{obj}.png')
+				plt.close()
 
 		############## generating a row to add to index_results.csv ############
 		if self.config["our_method"].getboolean("use_our_method") and self.config["our_method"].getboolean("KTH_dataset"):
